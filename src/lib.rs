@@ -143,8 +143,10 @@ fn parse_git_numstat(output: &str) -> FileStats {
             let mut parts = line.split('\t');
             let add = parts.next()?.parse().ok()?;
             let del = parts.next()?.parse().ok()?;
-            let path = parts.next()?;
-            Some((PathBuf::from(path), (add, del)))
+            // A rename is reported as `old => new` (or `dir/{old => new}`); key it by
+            // the new path, which is the path the diff records carry.
+            let (_, new_path) = split_display_path(Path::new(parts.next()?));
+            Some((new_path, (add, del)))
         })
         .collect()
 }
@@ -747,6 +749,14 @@ mod tests {
 
         assert_eq!(stats.get(Path::new("src/lib.rs")), Some(&(3, 1)));
         assert_eq!(stats.get(Path::new("README.md")), Some(&(0, 2)));
+    }
+
+    #[test]
+    fn test_parse_git_numstat_keys_renames_by_new_path() {
+        let stats = parse_git_numstat("1\t1\told.rs => sub/new.rs\n2\t0\tsrc/{a => b}.rs\n");
+
+        assert_eq!(stats.get(Path::new("sub/new.rs")), Some(&(1, 1)));
+        assert_eq!(stats.get(Path::new("src/b.rs")), Some(&(2, 0)));
     }
 
     #[test]
