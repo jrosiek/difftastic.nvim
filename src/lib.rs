@@ -339,6 +339,7 @@ fn split_display_path(path: &Path) -> (PathBuf, PathBuf) {
 fn prepare_file_for_display(
     file: &mut difftastic::DifftFile,
     stats: &FileStats,
+    renames: &HashMap<PathBuf, PathBuf>,
 ) -> (Option<(u32, u32)>, PathBuf, PathBuf, Option<PathBuf>) {
     let (old_path, new_path) = split_display_path(&file.path);
     let file_stats = stats
@@ -353,6 +354,14 @@ fn prepare_file_for_display(
         Some(old_path.clone())
     } else {
         None
+    };
+
+    // difft reports only the new path for a git rename, yet diffs it against the
+    // old file, so load the old content from the rename source. The status is left
+    // as difft reported it, so the rows are built as a change, not as a creation.
+    let old_path = match (&moved_from, renames.get(&new_path)) {
+        (None, Some(renamed_from)) => renamed_from.clone(),
+        _ => old_path,
     };
 
     (file_stats, old_path, new_path, moved_from)
@@ -408,21 +417,31 @@ fn parse_git_name_status_renames(output: &str) -> HashMap<PathBuf, PathBuf> {
         .collect()
 }
 
-fn git_rename_map(mode: &DiffMode) -> HashMap<PathBuf, PathBuf> {
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--name-status", "-M"]);
+/// Arguments for `git diff` that select the same sides as the content diff.
+fn git_rename_args(mode: &DiffMode) -> Vec<String> {
+    let mut args: Vec<String> = ["diff", "--name-status", "-M"].map(String::from).into();
 
     match mode {
         DiffMode::Range(range) => {
-            cmd.arg(range);
+            // Resolve like the content diff does: a bare revision means `rev^..rev`,
+            // not `rev` against the working tree.
+            let (old_ref, new_ref) = parse_git_range(range);
+            args.push(format!("{old_ref}..{new_ref}"));
         }
         DiffMode::Unstaged => {}
         DiffMode::Staged => {
-            cmd.arg("--cached");
+            args.push("--cached".to_string());
         }
     }
 
-    let output = cmd.output().ok();
+    args
+}
+
+fn git_rename_map(mode: &DiffMode) -> HashMap<PathBuf, PathBuf> {
+    let output = Command::new("git")
+        .args(git_rename_args(mode))
+        .output()
+        .ok();
     let Some(output) = output.filter(|o| o.status.success()) else {
         return HashMap::new();
     };
@@ -527,6 +546,13 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
     // are repo-root-relative, but jj file show resolves relative to CWD).
     let vcs_root = if vcs != "git" { jj_root() } else { git_root() };
 
+    // Needed before content lookup: a renamed file's old content lives at its old path.
+    let renames = if vcs == "git" {
+        git_rename_map(&mode)
+    } else {
+        jj_rename_map(&mode)
+    };
+
     // Process files based on mode and VCS
     let mut display_files: Vec<_> = match (&mode, vcs) {
         (DiffMode::Range(range), "git") => {
@@ -535,7 +561,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
                 .into_par_iter()
                 .map(|mut file| {
                     let (file_stats, old_path, new_path, moved_from) =
-                        prepare_file_for_display(&mut file, &stats);
+                        prepare_file_for_display(&mut file, &stats, &renames);
                     let old_lines = into_lines(git_file_content(&old_ref, &old_path));
                     let new_lines = into_lines(git_file_content(&new_ref, &new_path));
                     process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -550,7 +576,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
                 .into_par_iter()
                 .map(|mut file| {
                     let (file_stats, old_path, new_path, moved_from) =
-                        prepare_file_for_display(&mut file, &stats);
+                        prepare_file_for_display(&mut file, &stats, &renames);
                     let old_lines = into_lines(jj_file_content(root, &old_ref, &old_path));
                     let new_lines = into_lines(jj_file_content(root, &new_ref, &new_path));
                     process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -561,7 +587,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
             .into_par_iter()
             .map(|mut file| {
                 let (file_stats, old_path, new_path, moved_from) =
-                    prepare_file_for_display(&mut file, &stats);
+                    prepare_file_for_display(&mut file, &stats, &renames);
                 let old_lines = into_lines(git_index_content(&old_path));
                 let new_lines = into_lines(working_tree_content_for_vcs(&new_path, "git"));
                 process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -573,7 +599,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
                 .into_par_iter()
                 .map(|mut file| {
                     let (file_stats, old_path, new_path, moved_from) =
-                        prepare_file_for_display(&mut file, &stats);
+                        prepare_file_for_display(&mut file, &stats, &renames);
                     let old_lines = into_lines(jj_file_content(root, "@-", &old_path));
                     let new_lines = into_lines(working_tree_content_for_vcs(&new_path, "jj"));
                     process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -584,7 +610,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
             .into_par_iter()
             .map(|mut file| {
                 let (file_stats, old_path, new_path, moved_from) =
-                    prepare_file_for_display(&mut file, &stats);
+                    prepare_file_for_display(&mut file, &stats, &renames);
                 let old_lines = into_lines(git_file_content("HEAD", &old_path));
                 let new_lines = into_lines(git_index_content(&new_path));
                 process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -596,7 +622,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
                 .into_par_iter()
                 .map(|mut file| {
                     let (file_stats, old_path, new_path, moved_from) =
-                        prepare_file_for_display(&mut file, &stats);
+                        prepare_file_for_display(&mut file, &stats, &renames);
                     let old_lines = into_lines(jj_file_content(root, "@-", &old_path));
                     let new_lines = into_lines(jj_file_content(root, "@", &new_path));
                     process_prepared_file(file, old_lines, new_lines, file_stats, moved_from)
@@ -605,11 +631,6 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
         }
     };
 
-    let renames = if vcs == "git" {
-        git_rename_map(&mode)
-    } else {
-        jj_rename_map(&mode)
-    };
     if !renames.is_empty() {
         let old_paths: HashSet<PathBuf> = renames.values().cloned().collect();
 
@@ -830,12 +851,43 @@ mod tests {
         };
 
         let (file_stats, old_path, new_path, moved_from) =
-            prepare_file_for_display(&mut file, &stats);
+            prepare_file_for_display(&mut file, &stats, &HashMap::new());
 
         assert_eq!(file_stats, Some((3, 2)));
         assert_eq!(old_path, PathBuf::from("src/old.rs"));
         assert_eq!(new_path, PathBuf::from("src/new.rs"));
         assert_eq!(moved_from, Some(PathBuf::from("src/old.rs")));
+    }
+
+    #[test]
+    fn test_prepare_file_for_display_takes_old_path_from_rename_map() {
+        let mut renames = HashMap::new();
+        renames.insert(PathBuf::from("src/new.rs"), PathBuf::from("src/old.rs"));
+
+        let mut file = difftastic::DifftFile {
+            path: PathBuf::from("src/new.rs"),
+            language: "Rust".to_string(),
+            status: difftastic::Status::Changed,
+            aligned_lines: Vec::new(),
+            chunks: Vec::new(),
+        };
+
+        let (_, old_path, new_path, _) =
+            prepare_file_for_display(&mut file, &HashMap::new(), &renames);
+
+        assert_eq!(old_path, PathBuf::from("src/old.rs"));
+        assert_eq!(new_path, PathBuf::from("src/new.rs"));
+        // Rows must be built as a change against the old content, not as a creation.
+        assert_eq!(file.status, difftastic::Status::Changed);
+    }
+
+    #[test]
+    fn test_git_rename_args_resolve_single_revision_like_content_diff() {
+        let args = git_rename_args(&DiffMode::Range("HEAD".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("HEAD^..HEAD"));
+
+        let args = git_rename_args(&DiffMode::Range("a..b".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("a..b"));
     }
 
     #[test]
