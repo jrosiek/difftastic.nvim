@@ -317,12 +317,36 @@ local function prepare_node(node)
     return line
 end
 
---- Render the header with totals.
+--- Width available for text in a window: its width minus the columns drawn left
+--- of the text (number, sign, fold and status columns).
+--- @param win number
+--- @return number
+function M.text_width(win)
+    return vim.api.nvim_win_get_width(win) - vim.fn.getwininfo(win)[1].textoff
+end
+
+--- Turn off every column drawn left of the text. These are the only window
+--- options that take width from the text; 'statuscolumn' takes space whenever
+--- it is set, even with the other columns off.
+--- @param win number
+function M.hide_text_columns(win)
+    vim.wo[win].number = false
+    vim.wo[win].relativenumber = false
+    vim.wo[win].signcolumn = "no"
+    vim.wo[win].foldcolumn = "0"
+    vim.wo[win].statuscolumn = ""
+end
+
+--- Render the header with totals, sized to the tree window.
 --- @param state table Plugin state
 --- @param total_add number Total additions
 --- @param total_del number Total deletions
-local function render_header(state, total_add, total_del)
+--- @param replace_lines number|nil Existing header lines to replace (nil inserts)
+local function render_header(state, total_add, total_del, replace_lines)
     local width = get_config().width
+    if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
+        width = M.text_width(state.tree_win)
+    end
 
     local ns = vim.api.nvim_create_namespace("difft-tree-header")
     vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, 0, M.header_lines)
@@ -346,7 +370,8 @@ local function render_header(state, total_add, total_del)
     local range_line = "│ " .. range_inner .. " │"
     local bottom_line = "╰" .. string.rep("─", math.max(0, width - 2)) .. "╯"
 
-    vim.api.nvim_buf_set_lines(state.tree_buf, 0, 0, false, { top_line, stats_line, range_line, bottom_line })
+    vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, { top_line, stats_line, range_line, bottom_line })
+    M.header_width = width
 
     local title_start = top_line:find("Difftastic", 1, true)
     if title_start then
@@ -391,14 +416,11 @@ function M.open(state)
     state.tree_win = vim.api.nvim_get_current_win()
     state.tree_buf = vim.api.nvim_get_current_buf()
 
-    vim.wo[state.tree_win].number = false
-    vim.wo[state.tree_win].relativenumber = false
-    vim.wo[state.tree_win].signcolumn = "no"
+    M.hide_text_columns(state.tree_win)
     vim.wo[state.tree_win].winfixwidth = true
     vim.wo[state.tree_win].cursorline = true
     vim.wo[state.tree_win].scrollbind = false
     vim.wo[state.tree_win].cursorbind = false
-    vim.wo[state.tree_win].foldcolumn = "0"
     vim.wo[state.tree_win].list = false
     vim.wo[state.tree_win].winhl = table.concat({
         "Normal:DifftTreeNormal",
@@ -439,6 +461,19 @@ function M.open(state)
 
     M.tree:render(M.header_lines + 1)
 
+    -- Redraw the header box when the tree window changes width.
+    vim.api.nvim_create_autocmd("WinResized", {
+        group = vim.api.nvim_create_augroup("DifftTreeResize", { clear = true }),
+        callback = function()
+            if not (state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
+                return true -- diff view closed: drop this autocmd
+            end
+            if M.text_width(state.tree_win) ~= M.header_width then
+                M.refresh_header(state)
+            end
+        end,
+    })
+
     -- Keymaps
     local difft = require("difftastic-nvim")
     local keys = difft.config.keymaps
@@ -466,6 +501,20 @@ function M.render(state)
     if M.tree then
         M.tree:render()
     end
+end
+
+--- Redraw the header in place at the tree window's current width.
+--- @param state table Plugin state
+function M.refresh_header(state)
+    if not (state.tree_buf and vim.api.nvim_buf_is_valid(state.tree_buf)) then
+        return
+    end
+    -- nui leaves the tree buffer non-modifiable and read-only after rendering.
+    local buf = vim.bo[state.tree_buf]
+    local modifiable, readonly = buf.modifiable, buf.readonly
+    buf.modifiable, buf.readonly = true, false
+    render_header(state, M.total_additions or 0, M.total_deletions or 0, M.header_lines)
+    buf.modifiable, buf.readonly = modifiable, readonly
 end
 
 local function collect_visible_files(tree)

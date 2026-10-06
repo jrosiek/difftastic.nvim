@@ -179,6 +179,9 @@ function M.close()
     local diff_tabpage = M.state.diff_tabpage
     local original_tabpage = M.state.original_tabpage
 
+    -- Drop the view's autocmds now rather than when their events next fire.
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
+
     -- Reset state first
     M.state = {
         current_file_idx = 1,
