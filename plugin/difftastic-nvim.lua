@@ -10,9 +10,9 @@ if vim.fn.isdirectory(doc_dir) == 1 and vim.fn.filereadable(doc_dir .. "/tags") 
     pcall(vim.cmd.helptags, doc_dir)
 end
 
-local open_difft = vim.schedule_wrap(function(revset)
-    require("difftastic-nvim").open(revset)
-end)
+local function open_difft(revset)
+    require("difftastic-nvim").open_when_ready(revset)
+end
 
 vim.api.nvim_create_user_command("Difft", function(opts)
     local args = opts.args
@@ -30,6 +30,12 @@ vim.api.nvim_create_user_command("Difft", function(opts)
 end, {
     nargs = "?",
     desc = "Open difftastic diff view (no args = unstaged, --staged = staged, or revset/commit)",
+})
+
+vim.api.nvim_create_user_command("DifftToggleReviewed", function()
+    require("difftastic-nvim").toggle_reviewed()
+end, {
+    desc = "Toggle the reviewed mark of the shown file (or of the tree row under the cursor)",
 })
 
 vim.api.nvim_create_user_command("DifftClose", function()

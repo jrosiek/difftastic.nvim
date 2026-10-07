@@ -21,10 +21,11 @@ local GLYPHS = {
 --- Module state
 --- @type table|nil
 M.tree = nil
---- @type table<number, string>
-M.file_to_node_id = {}
 --- @type number|nil
 M.current_file_idx = nil
+--- Display width tree rows are cut to; nil leaves them whole.
+--- @type number|nil
+M.row_width = nil
 --- @type number
 M.total_additions = 0
 --- @type number
@@ -239,13 +240,13 @@ local function sort_node(node)
     end
 end
 
-local function convert_to_nui_nodes(node, file_to_node_id)
+local function convert_to_nui_nodes(node)
     local nui_children = {}
 
     for _, child in ipairs(node.children) do
         local grandchildren = nil
         if child.is_dir then
-            grandchildren = convert_to_nui_nodes(child, file_to_node_id)
+            grandchildren = convert_to_nui_nodes(child)
         end
 
         local nui_node = NuiTree.Node({
@@ -260,10 +261,6 @@ local function convert_to_nui_nodes(node, file_to_node_id)
             moved_from = child.moved_from,
         }, grandchildren)
 
-        if child.file_idx then
-            file_to_node_id[child.file_idx] = child.path
-        end
-
         if child.is_dir then
             nui_node:expand()
         end
@@ -272,6 +269,67 @@ local function convert_to_nui_nodes(node, file_to_node_id)
     end
 
     return nui_children
+end
+
+--- Cut a tree row to `width` display columns, ending it with "…" when it does not
+--- fit. Highlights of the kept segments are preserved.
+--- @param line table NuiLine
+--- @param width number|nil
+--- @return table NuiLine
+local function fit_row(line, width)
+    if not width or line:width() <= width then
+        return line
+    end
+    if width <= 0 then
+        return NuiLine()
+    end
+    local fitted = NuiLine()
+    local used = 0
+    for _, text in ipairs(line._texts) do
+        if used + text:width() < width then
+            fitted:append(text:content(), text.extmark)
+            used = used + text:width()
+        else
+            local room = width - used
+            local cut = vim.fn.strcharpart(text:content(), 0, room)
+            while cut ~= "" and display_width(cut .. "…") > room do
+                cut = vim.fn.strcharpart(cut, 0, vim.fn.strchars(cut) - 1)
+            end
+            fitted:append(cut .. "…", text.extmark)
+            break
+        end
+    end
+    return fitted
+end
+
+--- Review marker of a row: reviewed, not shown yet in this view, or none (blank).
+--- @return string glyph, string highlight
+local function review_marker(node, cfg)
+    local state = require("difftastic-nvim").state
+    if node.is_dir then
+        -- A directory is reviewed once every file in it is.
+        local paths = M.file_paths(node, state)
+        for _, path in ipairs(paths) do
+            if not (state.reviewed and state.reviewed[path]) then
+                return " ", "DifftTreeMuted"
+            end
+        end
+        if #paths > 0 then
+            return cfg.icons.reviewed, "DifftTreeReviewed"
+        end
+        return " ", "DifftTreeMuted"
+    end
+    local file = node.file_idx and state.files[node.file_idx]
+    if not file then
+        return " ", "DifftTreeMuted"
+    end
+    if state.reviewed and state.reviewed[file.path] then
+        return cfg.icons.reviewed, "DifftTreeReviewed"
+    end
+    if state.visited and not state.visited[file.path] then
+        return cfg.icons.unvisited, "DifftTreeUnvisited"
+    end
+    return " ", "DifftTreeMuted"
 end
 
 local function prepare_node(node)
@@ -314,21 +372,67 @@ local function prepare_node(node)
 
     append_stat_chip(line, node.additions, node.deletions)
 
+    -- The review marker takes a column of its own at the right edge: the row is
+    -- cut and padded to end just before it, so the text never overlaps it.
+    local marker, marker_hl = review_marker(node, cfg)
+    local column = math.max(display_width(cfg.icons.unvisited), display_width(cfg.icons.reviewed))
+    if M.row_width then
+        line = fit_row(line, M.row_width - column - 1)
+        local pad = M.row_width - column - 1 - line:width()
+        if pad > 0 then
+            line:append(string.rep(" ", pad), "DifftTreeMuted")
+        end
+    end
+    line:append(" ", "DifftTreeMuted")
+    line:append(marker .. string.rep(" ", column - display_width(marker)), marker_hl)
     return line
 end
 
---- Render the header with totals.
+--- Width available for text in a window: its width minus the columns drawn left
+--- of the text (number, sign, fold and status columns).
+--- @param win number
+--- @return number
+function M.text_width(win)
+    return vim.api.nvim_win_get_width(win) - vim.fn.getwininfo(win)[1].textoff
+end
+
+--- Turn off every column drawn left of the text. These are the only window
+--- options that take width from the text; 'statuscolumn' takes space whenever
+--- it is set, even with the other columns off.
+--- @param win number
+function M.hide_text_columns(win)
+    vim.wo[win].number = false
+    vim.wo[win].relativenumber = false
+    vim.wo[win].signcolumn = "no"
+    vim.wo[win].foldcolumn = "0"
+    vim.wo[win].statuscolumn = ""
+end
+
+--- Render the header with totals, sized to the tree window.
 --- @param state table Plugin state
 --- @param total_add number Total additions
 --- @param total_del number Total deletions
-local function render_header(state, total_add, total_del)
+--- @param replace_lines number|nil Existing header lines to replace (nil inserts)
+local function render_header(state, total_add, total_del, replace_lines)
     local width = get_config().width
+    if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
+        width = M.text_width(state.tree_win)
+    end
 
     local ns = vim.api.nvim_create_namespace("difft-tree-header")
     vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, 0, M.header_lines)
 
     local file_count = #(state.files or {})
     local file_label = file_count == 1 and "1 file" or (file_count .. " files")
+    local reviewed_count = 0
+    for _, file in ipairs(state.files or {}) do
+        if state.reviewed and state.reviewed[file.path] then
+            reviewed_count = reviewed_count + 1
+        end
+    end
+    if reviewed_count > 0 then
+        file_label = ("%d/%d reviewed"):format(reviewed_count, file_count)
+    end
 
     local add_text = "+" .. total_add
     local del_text = "-" .. total_del
@@ -346,7 +450,8 @@ local function render_header(state, total_add, total_del)
     local range_line = "│ " .. range_inner .. " │"
     local bottom_line = "╰" .. string.rep("─", math.max(0, width - 2)) .. "╯"
 
-    vim.api.nvim_buf_set_lines(state.tree_buf, 0, 0, false, { top_line, stats_line, range_line, bottom_line })
+    vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, { top_line, stats_line, range_line, bottom_line })
+    M.header_width = width
 
     local title_start = top_line:find("Difftastic", 1, true)
     if title_start then
@@ -391,15 +496,14 @@ function M.open(state)
     state.tree_win = vim.api.nvim_get_current_win()
     state.tree_buf = vim.api.nvim_get_current_buf()
 
-    vim.wo[state.tree_win].number = false
-    vim.wo[state.tree_win].relativenumber = false
-    vim.wo[state.tree_win].signcolumn = "no"
+    M.hide_text_columns(state.tree_win)
     vim.wo[state.tree_win].winfixwidth = true
     vim.wo[state.tree_win].cursorline = true
     vim.wo[state.tree_win].scrollbind = false
     vim.wo[state.tree_win].cursorbind = false
-    vim.wo[state.tree_win].foldcolumn = "0"
     vim.wo[state.tree_win].list = false
+    -- A long row is cut off at the panel edge rather than wrapped onto a second line.
+    vim.wo[state.tree_win].wrap = false
     vim.wo[state.tree_win].winhl = table.concat({
         "Normal:DifftTreeNormal",
         "NormalNC:DifftTreeNormal",
@@ -424,8 +528,7 @@ function M.open(state)
     M.total_deletions = root.deletions
 
     -- Convert to nui nodes
-    M.file_to_node_id = {}
-    local nui_nodes = convert_to_nui_nodes(root, M.file_to_node_id)
+    local nui_nodes = convert_to_nui_nodes(root)
 
     -- Render header first
     render_header(state, root.additions, root.deletions)
@@ -437,18 +540,36 @@ function M.open(state)
         prepare_node = prepare_node,
     })
 
+    M.row_width = M.text_width(state.tree_win)
     M.tree:render(M.header_lines + 1)
+
+    -- Redraw the header box and the rows when the tree window changes width.
+    vim.api.nvim_create_autocmd("WinResized", {
+        group = vim.api.nvim_create_augroup("DifftTreeResize", { clear = true }),
+        callback = function()
+            if not (state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
+                return true -- diff view closed: drop this autocmd
+            end
+            if M.text_width(state.tree_win) ~= M.header_width then
+                M.refresh_header(state)
+                M.refresh_rows(state)
+            end
+        end,
+    })
 
     -- Keymaps
     local difft = require("difftastic-nvim")
     local keys = difft.config.keymaps
 
-    vim.keymap.set("n", keys.select, function()
+    local function select()
         local node = M.tree:get_node()
         if not node then return end
 
         if node.file_idx then
             difft.show_file(node.file_idx)
+            if difft.config.focus_diff_on_select then
+                difft.focus_diff()
+            end
         elseif node.is_dir then
             if node:is_expanded() then
                 node:collapse()
@@ -457,13 +578,129 @@ function M.open(state)
             end
             M.tree:render()
         end
-    end, { buffer = state.tree_buf })
+    end
+    vim.keymap.set("n", keys.select, select, { buffer = state.tree_buf })
+    -- The first click of a double click has already put the cursor on the row. A
+    -- double click on a split of the view acts on it (see split_double_click); one
+    -- elsewhere keeps its default.
+    vim.keymap.set("n", "<2-LeftMouse>", function()
+        if difft.split_double_click() then
+            return ""
+        end
+        local mouse = vim.fn.getmousepos()
+        if mouse.winid ~= state.tree_win or mouse.line == 0 then
+            return "<2-LeftMouse>"
+        end
+        vim.schedule(select)
+        return ""
+    end, { buffer = state.tree_buf, expr = true })
 
     vim.keymap.set("n", keys.close, difft.close, { buffer = state.tree_buf })
 end
 
 function M.render(state)
     if M.tree then
+        M.tree:render()
+    end
+end
+
+--- Redraw the header in place at the tree window's current width.
+--- @param state table Plugin state
+function M.refresh_header(state)
+    if not (state.tree_buf and vim.api.nvim_buf_is_valid(state.tree_buf)) then
+        return
+    end
+    -- nui leaves the tree buffer non-modifiable and read-only after rendering.
+    local buf = vim.bo[state.tree_buf]
+    local modifiable, readonly = buf.modifiable, buf.readonly
+    buf.modifiable, buf.readonly = true, false
+    render_header(state, M.total_additions or 0, M.total_deletions or 0, M.header_lines)
+    buf.modifiable, buf.readonly = modifiable, readonly
+end
+
+--- Paths of the files a node stands for: itself, or every file below a directory.
+--- @param node table NuiTree node
+--- @param state table Plugin state
+--- @return string[]
+function M.file_paths(node, state)
+    local paths = {}
+    local function walk(n)
+        if n.file_idx then
+            local file = state.files[n.file_idx]
+            if file then
+                table.insert(paths, file.path)
+            end
+        end
+        for _, id in ipairs(n:get_child_ids() or {}) do
+            local child = M.tree:get_node(id)
+            if child then
+                walk(child)
+            end
+        end
+    end
+    walk(node)
+    return paths
+end
+
+--- Redraw the tree rows at the tree window's current width, keeping the cursor
+--- and the current-file highlight.
+--- @param state table Plugin state
+function M.refresh_rows(state)
+    if not (M.tree and state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
+        return
+    end
+    M.row_width = M.text_width(state.tree_win)
+    local cursor = vim.api.nvim_win_get_cursor(state.tree_win)
+    M.tree:render()
+    M.highlight_current(state)
+    vim.api.nvim_win_set_cursor(state.tree_win, cursor)
+end
+
+--- File indices of every file in tree order, inside collapsed directories too.
+--- @return number[]
+function M.all_files_in_order()
+    local files = {}
+    if not M.tree then
+        return files
+    end
+    local function walk(parent_id)
+        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+            if node.file_idx then
+                table.insert(files, node.file_idx)
+            end
+            if node:has_children() then
+                walk(node:get_id())
+            end
+        end
+    end
+    walk(nil)
+    return files
+end
+
+--- Expand the directories around a file, so its row is visible.
+--- @param file_idx number
+function M.reveal_file(file_idx)
+    if not M.tree then
+        return
+    end
+    local changed = false
+    local function walk(parent_id)
+        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+            if node.file_idx == file_idx then
+                return true
+            end
+            if node:has_children() and walk(node:get_id()) then
+                if not node:is_expanded() then
+                    node:expand()
+                    changed = true
+                end
+                return true
+            end
+        end
+        return false
+    end
+    walk(nil)
+    if changed then
         M.tree:render()
     end
 end

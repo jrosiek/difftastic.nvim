@@ -18,7 +18,8 @@ difftastic-nvim displays difftastic diffs in a side-by-side view with syntax
 highlighting, a file tree sidebar, and synchronized scrolling.
 
 Features:
-- Side-by-side diff view with synchronized scrolling
+- Side-by-side diff view with synchronized scrolling (mouse wheel included);
+  the panes keep their split when Neovim is resized
 - Hierarchical file tree with directory collapsing
 - Syntax highlighting for the source language
 - Filler lines to indicate alignment gaps
@@ -27,7 +28,7 @@ Features:
 ==============================================================================
 2. REQUIREMENTS                                   *difftastic-nvim-requirements*
 
-- Neovim 0.9+
+- Neovim 0.10+
 - nui.nvim (https://github.com/MunifTanjim/nui.nvim)
 - difftastic with aligned_lines support (see note below)
 - jj or git version control
@@ -96,6 +97,12 @@ Downloaded binaries are stored in: >
     copy vs @). The `--staged` flag shows @ changes since jj has no staging
     area. To view the parent change explicitly, use `:Difft @-` which is
     equivalent to `jj diff -r @-`.
+                                                          *:DifftToggleReviewed*
+:DifftToggleReviewed
+    Toggle the reviewed mark of the shown file. With the cursor in the
+    tree, of the file under it, or of every file in the directory under it
+    (all marked unless all already are). See |difftastic-nvim-review|.
+
                                                                    *:DifftClose*
 :DifftClose
     Close the diff view.
@@ -140,8 +147,16 @@ Default keybindings:
     [f          Previous file
     ]c          Next hunk (see |difftastic-nvim-hunk-wrap-file|)
     [c          Previous hunk (see |difftastic-nvim-hunk-wrap-file|)
-    <Tab>       Toggle focus between file tree and diff panes
+    <Tab>       Toggle focus between file tree and diff panes (from the
+                tree, back to the diff pane used last; the head pane at
+                first)
     <CR>        Select file or toggle directory (in tree)
+    R           Toggle the reviewed mark (see |:DifftToggleReviewed|)
+    ]u          Next file not marked as reviewed
+    [u          Previous file not marked as reviewed
+    <2-LeftMouse>  Same as <CR> on the clicked row (in tree); on the split
+                   between the diff panes, give both panes the same width;
+                   on the side panel's right border, reset it to tree.width
     q           Close diff view
 
 Filler lines (shown as diagonal lines) indicate where content exists on one
@@ -158,6 +173,14 @@ Call the setup function with your options: >lua
         highlight_mode = "treesitter", -- "treesitter" (default) or "difftastic"
         hunk_wrap_file = true, -- Wrap to next/prev file at end/start of hunks
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
+        focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
+        auto_review = false,  -- Mark a file as reviewed when it is shown (default: false)
+        max_parallel_difft_calls = 0, -- difft processes at once (git); 0 = one per CPU
+        context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
+        min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)
+        fold_by_default = true, -- Folds start closed (default: true)
+        fold_fill = "━",       -- Rule across a closed fold (default: "━")
+        fold_accent = "Directory", -- Group whose colour folds take
         snacks_picker = {
             enabled = false,    -- Enable :DifftPick (default: false)
             limit = 200,        -- Max revisions/commits to show (default: 200)
@@ -172,6 +195,9 @@ Call the setup function with your options: >lua
             focus_tree = "<Tab>",
             focus_diff = "<Tab>",
             select = "<CR>",
+            toggle_reviewed = "R",
+            next_unreviewed = "]u",
+            prev_unreviewed = "[u",
         },
         tree = {
             width = 40,
@@ -179,6 +205,8 @@ Call the setup function with your options: >lua
                 enable = true,
                 dir_open = "",
                 dir_closed = "",
+                unvisited = "•",
+                reviewed = "✓",
             },
         },
         highlights = {
@@ -251,9 +279,76 @@ hunk_wrap_file ~
 
 scroll_to_first_hunk ~
     When enabled, opening a file in the diff view will auto-scroll to the
-    first hunk of changes instead of the top of the file.
+    first hunk of changes instead of the top of the file. A file shown
+    before in the same diff view returns to the cursor position and pane
+    (base or head) it was left at instead.
 
     Default: true
+
+focus_diff_on_select ~
+    When enabled, selecting a file in the tree (|difftastic-nvim-keymaps|
+    `select`) also moves focus to its diff pane, the same pane `<Tab>` goes
+    to: the pane the file was left in, else the pane used last, else the
+    head pane. When disabled, focus stays in the tree.
+
+    Default: true
+
+                                                   *difftastic-nvim-folding*
+context_size ~
+    Number of unchanged lines kept visible above and below each change. The
+    remaining unchanged lines are folded, in both diff panes. A file without
+    changes is folded as a whole. Opening or closing one of these folds in
+    one pane does the same in the other. Folds deleted or added in a pane
+    (|zE|, |zd|, |zf|, |:fold|) are put back as the plugin made them. 0 turns folding off: the plugin adds no
+    folds and leaves the panes' fold options alone. A negative value is
+    reported as an error and ignored.
+
+    Default: 3
+
+min_fold_size ~
+    Smallest run of unchanged lines that gets folded; shorter runs stay
+    visible. Must be 1 or more; other values are reported and ignored.
+
+    Default: 2
+
+fold_by_default ~
+    When enabled, the folds start closed; otherwise they are created open.
+    This applies to a file shown for the first time: a file shown again in
+    the same diff view gets back the folds it was left with. If its folds
+    changed meanwhile (|difftastic-nvim-folding| settings), they start from
+    this default, and a fold that would hide the remembered cursor line is
+    opened.
+    A closed fold is a band across the pane with the number of lines it
+    hides centred in a rule: "━━━━ ▸ 42 unchanged lines ━━━━". The diff
+    panes draw it with DifftFold instead of the theme's |hl-Folded|.
+
+    Default: true
+
+fold_fill ~
+    Character of the rule across a closed fold. It is set as the fold item
+    of 'fillchars' in the diff panes only. Must be one character taking one screen cell;
+    other values are reported and ignored. If Neovim rejects it (box
+    drawing characters take two cells with 'ambiwidth' set to "double"),
+    "=" is used instead.
+
+    Default: "━"
+
+fold_accent ~
+    Name of the highlight group whose foreground colours closed folds: the
+    text and rule, and blended into the background, the band (DifftFold).
+    Falls back to Directory when the group has no foreground colour.
+
+    Default: "Directory"
+
+    These settings apply to files shown after they change.
+
+max_parallel_difft_calls ~
+    For a git diff, difft runs once per changed file. This is the most
+    difft processes run at the same time; 0 runs one per CPU. Lower it to
+    leave CPUs free; 1 runs one file at a time. Must be a whole number, 0 or
+    more; other values are reported and ignored. jj diffs are not affected.
+
+    Default: 0
 
                                                         *difftastic-nvim-keymaps*
 Keymap options:
@@ -266,6 +361,9 @@ Keymap options:
     focus_tree      Move focus to the file tree (from diff panes)
     focus_diff      Move focus to the diff pane (from tree)
     select          Select file or toggle directory in tree
+    toggle_reviewed Toggle the reviewed mark (see |difftastic-nvim-review|)
+    next_unreviewed Show the next file not marked as reviewed
+    prev_unreviewed Show the previous file not marked as reviewed
 
                                                            *difftastic-nvim-tree*
 Tree options:
@@ -274,6 +372,22 @@ Tree options:
     icons.enable    Use nvim-web-devicons for file icons (default: true)
     icons.dir_open  Icon for expanded directories (default: "")
     icons.dir_closed  Icon for collapsed directories (default: "")
+    icons.unvisited Review marker of a file not shown yet (default: "•")
+    icons.reviewed  Review marker of a reviewed file (default: "✓")
+
+                                                         *difftastic-nvim-review*
+Review markers:
+
+    A column at the right edge of the tree marks each file's review state:
+    "•" for a file not shown yet in this diff view, nothing for a file that
+    was shown, and "✓" for a file marked as reviewed (|:DifftToggleReviewed|,
+    `R`). Rows are cut before that column, so the markers stay visible in a
+    narrow panel.
+    With `auto_review = true`, showing a file also marks it as reviewed.
+    A directory shows "✓" once every file in it is reviewed, and the header
+    box counts the reviewed files ("3/12 reviewed"). `]u` and `[u` show the
+    next and previous file not marked as reviewed, in tree order, opening
+    collapsed directories as needed. The marks belong to the open diff view.
 
 ==============================================================================
 7. HIGHLIGHTS                                       *difftastic-nvim-highlights*
@@ -305,6 +419,8 @@ Tree highlights:
     DifftTreeDeleted      Links to `Removed`      Deleted status marker
     DifftTreeModified     Derived from `Changed`  Modified status marker
     DifftTreeRenamed      Links to `Directory`    Renamed status marker
+    DifftTreeReviewed     Links to `Added`        Reviewed file marker
+    DifftTreeUnvisited    Links to `Directory`    File not shown yet
     DifftTreeMuted        Derived from `Comment`  Tree hints and separators
     DifftTreeIndent       Derived from `Comment`  Tree indent guide
     DifftTreeChevron      Derived from `Comment`  Directory expand/collapse chevron
@@ -326,6 +442,7 @@ Picker highlights:
 
 Other:
     DifftFiller           Derived from `Normal`   Filler lines for gaps
+    DifftFold             Derived from `Directory` Band and text of a closed fold
 
 Override in setup: >lua
 

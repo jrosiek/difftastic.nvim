@@ -26,6 +26,15 @@ local function setup_diff_keymaps(buf, state)
     if keys.goto_file then
         vim.keymap.set("n", keys.goto_file, difft.goto_file, { buffer = buf })
     end
+    if keys.toggle_reviewed then
+        vim.keymap.set("n", keys.toggle_reviewed, difft.toggle_reviewed, { buffer = buf })
+    end
+    if keys.next_unreviewed then
+        vim.keymap.set("n", keys.next_unreviewed, difft.next_unreviewed, { buffer = buf })
+    end
+    if keys.prev_unreviewed then
+        vim.keymap.set("n", keys.prev_unreviewed, difft.prev_unreviewed, { buffer = buf })
+    end
     if keys.focus_tree then
         vim.keymap.set("n", keys.focus_tree, function()
             if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
@@ -33,6 +42,11 @@ local function setup_diff_keymaps(buf, state)
             end
         end, { buffer = buf })
     end
+    -- A double click on a split of the view acts on it (see split_double_click);
+    -- any other double click keeps its default.
+    vim.keymap.set("n", "<2-LeftMouse>", function()
+        return difft.split_double_click() and "" or "<2-LeftMouse>"
+    end, { buffer = buf, expr = true })
 end
 
 --- Set up keymaps for tree buffer.
@@ -43,17 +57,22 @@ local function setup_tree_keymaps(state)
     local buf = state.tree_buf
 
     if keys.focus_diff then
-        vim.keymap.set("n", keys.focus_diff, function()
-            if state.left_win and vim.api.nvim_win_is_valid(state.left_win) then
-                vim.api.nvim_set_current_win(state.left_win)
-            end
-        end, { buffer = buf })
+        vim.keymap.set("n", keys.focus_diff, difft.focus_diff, { buffer = buf })
     end
     if keys.next_file then
         vim.keymap.set("n", keys.next_file, difft.next_file, { buffer = buf })
     end
     if keys.prev_file then
         vim.keymap.set("n", keys.prev_file, difft.prev_file, { buffer = buf })
+    end
+    if keys.toggle_reviewed then
+        vim.keymap.set("n", keys.toggle_reviewed, difft.toggle_reviewed, { buffer = buf })
+    end
+    if keys.next_unreviewed then
+        vim.keymap.set("n", keys.next_unreviewed, difft.next_unreviewed, { buffer = buf })
+    end
+    if keys.prev_unreviewed then
+        vim.keymap.set("n", keys.prev_unreviewed, difft.prev_unreviewed, { buffer = buf })
     end
 end
 

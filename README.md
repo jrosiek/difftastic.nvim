@@ -20,7 +20,7 @@ view with syntax highlighting.
 
 ### Requirements
 
-- Neovim 0.9+
+- Neovim 0.10+
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
 - [difftastic](https://github.com/Wilfred/difftastic) (`difft` command)
 - [jj](https://github.com/martinvonz/jj) or [git](https://git-scm.com/) version control
@@ -76,6 +76,7 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftPick` | Pick a jj revision or git commit using snacks.nvim (with preview) |
 | `:DifftPickRange` | Pick end revision, then pick a parent revision as range start |
 | `:DifftClose` | Close the diff view |
+| `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor) |
 | `:DifftUpdate` | Update to latest release (requires `download = true`) |
 
 ### Examples (jj)
@@ -127,9 +128,13 @@ All keybindings are buffer-local and configurable via `setup()`. Defaults:
 | `]c` | Next hunk |
 | `[c` | Previous hunk |
 | `<Tab>` | Toggle focus between file tree and diff |
-| `<CR>` | Open file under cursor (in file tree) |
+| `<CR>` | Open file under cursor (in file tree) and focus its diff pane (see `focus_diff_on_select`) |
 | `gf` | Go to file at cursor position (opens in previous tab or new tab) |
+| `R` | Toggle the reviewed mark of the shown file; in the tree, of the file or directory under the cursor |
+| `]u` / `[u` | Next / previous file not marked as reviewed |
 | `q` | Close diff view |
+| Double-click the split between the diff panes | Give both panes the same width |
+| Double-click the side panel's right border | Reset the panel to `tree.width` |
 
 The `gf` keymap works from the right pane (new/working version) and jumps to the corresponding line and column in an editable buffer. If on a filler line, it jumps to the nearest non-filler line.
 
@@ -143,7 +148,15 @@ require("difftastic-nvim").setup({
     vcs = "jj",                    -- "jj" (default) or "git"
     highlight_mode = "treesitter", -- "treesitter" (default) or "difftastic"
     hunk_wrap_file = true,          -- Next hunk at last hunk goes to next file
-    scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
+    scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
+    focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
+    auto_review = false,          -- Mark a file as reviewed when it is shown (default: false)
+    max_parallel_difft_calls = 0, -- difft processes run at once for a git diff; 0 = one per CPU (default: 0)
+    context_size = 3,             -- Unchanged lines kept around each change; the rest is folded. 0 turns folding off (default: 3)
+    min_fold_size = 2,            -- Smallest run of unchanged lines that gets folded (default: 2)
+    fold_by_default = true,       -- Whether those folds start closed (default: true)
+    fold_fill = "━",              -- Character of the rule across a closed fold (default: "━")
+    fold_accent = "Directory",    -- Highlight group whose colour closed folds take (default: "Directory")
     snacks_picker = {
         enabled = false,          -- opt-in snacks.nvim integration (default: false)
         limit = 200,              -- number of revisions/commits to list in :DifftPick
@@ -159,6 +172,9 @@ require("difftastic-nvim").setup({
         focus_diff = "<Tab>",
         select = "<CR>",
         goto_file = "gf",
+        toggle_reviewed = "R",
+        next_unreviewed = "]u",
+        prev_unreviewed = "[u",
     },
     tree = {
         width = 40,
@@ -166,6 +182,8 @@ require("difftastic-nvim").setup({
             enable = true,    -- use nvim-web-devicons if available
             dir_open = "",
             dir_closed = "",
+            unvisited = "•",  -- review marker: file not shown yet
+            reviewed = "✓",   -- review marker: file marked as reviewed
         },
     },
     highlights = {
@@ -217,6 +235,8 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftTreeDeleted` | Links to `Removed` | Deleted status marker |
 | `DifftTreeModified` | Derived from `Changed`/`Identifier` | Modified status marker |
 | `DifftTreeRenamed` | Links to `Directory` | Renamed status marker |
+| `DifftTreeReviewed` | Links to `Added` | Reviewed file marker |
+| `DifftTreeUnvisited` | Links to `Directory` | Marker of a file not shown yet |
 | `DifftTreeMuted` | Derived from `Comment` | Tree hints and separators |
 | `DifftTreeIndent` | Derived from `Comment` | Tree indent guide |
 | `DifftTreeChevron` | Derived from `Comment` | Directory expand/collapse chevron |
@@ -244,6 +264,7 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | Group | Default | Description |
 |-------|---------|-------------|
 | `DifftFiller` | Derived from `Normal` | Filler lines for alignment gaps |
+| `DifftFold` | Derived from `fold_accent` (`Directory`) | Band and text of a closed fold of unchanged lines (used for `Folded` in the diff panes) |
 
 ## License
 

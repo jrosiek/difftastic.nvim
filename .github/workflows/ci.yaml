@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 on:
   push:
     branches: [main]
@@ -66,3 +66,39 @@ jobs:
           cache-on-failure: true
       - name: fmt + lint
         run: just lint
+
+  lua-tests:
+    runs-on: ubuntu-latest
+    name: Lua tests
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@just
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Install difftastic and jj
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL https://github.com/Wilfred/difftastic/releases/download/0.71.0/difft-0.71.0-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" difft
+          curl -sSfL https://github.com/jj-vcs/jj/releases/download/v0.45.1/jj-v0.45.1-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" ./jj
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install plenary.nvim and nui.nvim
+        run: |
+          pack="$HOME/.local/share/nvim/site/pack/vendor/start"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$pack/plenary.nvim"
+          git clone --depth 1 https://github.com/MunifTanjim/nui.nvim "$pack/nui.nvim"
+      - name: Build the native library
+        run: cargo build --release --locked
+      - name: Lua tests
+        run: just test-lua

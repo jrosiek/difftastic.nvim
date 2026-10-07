@@ -59,6 +59,8 @@ M.linked = {
     DifftTreeDeleted = { link = "Removed" },
     DifftTreeModified = { link = "Changed" },
     DifftTreeRenamed = { link = "Directory" },
+    DifftTreeReviewed = { link = "Added" },
+    DifftTreeUnvisited = { link = "Directory" },
     DifftTreeRange = { link = "BlueItalic" },
 
     -- Picker text highlights
@@ -86,6 +88,10 @@ local function apply_highlights(overrides)
     local added_fg = get_fg("Added") or "#9ece6a"
     local removed_fg = get_fg("Removed") or "#f7768e"
     local changed_fg = get_fg("Changed") or get_fg("Identifier") or "#7aa2f7"
+    -- Closed folds take their colour from the group named by fold_accent.
+    local plugin = package.loaded["difftastic-nvim"]
+    local fold_accent = plugin and plugin.config and plugin.config.fold_accent or "Directory"
+    local accent_fg = get_fg(fold_accent) or get_fg("Directory") or "#7aa2f7"
 
     local added_bg = blend(added_fg, normal_bg, M.bg_opacity)
     local removed_bg = blend(removed_fg, normal_bg, M.bg_opacity)
@@ -120,6 +126,8 @@ local function apply_highlights(overrides)
         DifftAddedFg = { fg = added_fg, bold = true },
         DifftRemovedFg = { fg = removed_fg, bold = true },
         DifftFiller = { fg = normal_blend },
+        -- A band of the accent colour across a closed fold, with accent text.
+        DifftFold = { fg = accent_fg, bg = blend(accent_fg, normal_bg, 0.18) },
     }
 
     for name, default in pairs(derived) do
@@ -128,10 +136,24 @@ local function apply_highlights(overrides)
     end
 end
 
+--- Overrides given to setup(), reused whenever the groups are derived again.
+local current_overrides = nil
+
+--- Derive the highlight groups again from the current colours. Some theme loaders
+--- set the colours without a ColorScheme event, after setup() ran (NvChad applies
+--- its theme from precompiled files once plugins are set up), which would leave
+--- the derived groups blended from Neovim's default theme.
+function M.refresh()
+    if current_overrides then
+        apply_highlights(current_overrides)
+    end
+end
+
 --- Setup highlight groups with optional overrides.
 --- @param overrides table<string, vim.api.keyset.highlight>|nil User overrides
 function M.setup(overrides)
     overrides = overrides or {}
+    current_overrides = overrides
 
     -- Apply highlights now
     apply_highlights(overrides)
@@ -150,6 +172,15 @@ function M.setup(overrides)
             apply_highlights(overrides)
         end,
     })
+    -- Once the whole config has run, in case its theme was applied after setup()
+    -- without a ColorScheme event.
+    if vim.v.vim_did_enter == 0 then
+        vim.api.nvim_create_autocmd("VimEnter", {
+            group = vim.api.nvim_create_augroup("DifftHighlightsStartup", { clear = true }),
+            once = true,
+            callback = M.refresh,
+        })
+    end
 end
 
 return M

@@ -6,6 +6,9 @@ local diff = require("difftastic-nvim.diff")
 local tree = require("difftastic-nvim.tree")
 local highlight = require("difftastic-nvim.highlight")
 local keymaps = require("difftastic-nvim.keymaps")
+local fold = require("difftastic-nvim.fold")
+
+local record_position -- defined with the per-file positions below
 
 --- Default configuration
 M.config = {
@@ -17,6 +20,22 @@ M.config = {
     hunk_wrap_file = true,
     --- When true, scroll to first hunk after opening a file
     scroll_to_first_hunk = true,
+    --- When true, selecting a file in the tree also moves focus to its diff pane
+    focus_diff_on_select = true,
+    --- Unchanged lines kept unfolded around each change; 0 turns folding off
+    context_size = 3,
+    --- Smallest run of unchanged lines that gets folded
+    min_fold_size = 2,
+    --- When true, folds start closed
+    fold_by_default = true,
+    --- Character filling a closed fold's line (one screen cell)
+    fold_fill = "━",
+    --- Highlight group whose foreground colours closed folds
+    fold_accent = "Directory",
+    --- When true, a file is marked as reviewed when it is shown
+    auto_review = false,
+    --- Most difft processes run at once for a git diff; 0 uses one per CPU
+    max_parallel_difft_calls = 0,
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -27,6 +46,9 @@ M.config = {
         focus_diff = "<Tab>",
         select = "<CR>",
         goto_file = "gf",
+        toggle_reviewed = "R",
+        next_unreviewed = "]u",
+        prev_unreviewed = "[u",
     },
     tree = {
         width = 40,
@@ -34,6 +56,10 @@ M.config = {
             enable = true,
             dir_open = "",
             dir_closed = "",
+            --- Review marker of a file not shown yet in this diff view
+            unvisited = "•",
+            --- Review marker of a file marked as reviewed
+            reviewed = "✓",
         },
     },
     snacks_picker = {
@@ -57,6 +83,15 @@ M.state = {
     right_buf = nil,
     original_tabpage = nil,
     diff_tabpage = nil,
+    pane_side = nil,
+    positions = {},
+    shown_path = nil,
+    fold_ranges = {},
+    fold_closed = nil,
+    fold_states = {},
+    saved_fold_options = {},
+    visited = {},
+    reviewed = {},
 }
 
 local function git_range_label(revset)
@@ -112,6 +147,54 @@ function M.setup(opts)
     if opts.scroll_to_first_hunk ~= nil then
         M.config.scroll_to_first_hunk = opts.scroll_to_first_hunk
     end
+    if opts.focus_diff_on_select ~= nil then
+        M.config.focus_diff_on_select = opts.focus_diff_on_select
+    end
+    if opts.context_size ~= nil then
+        if type(opts.context_size) ~= "number" or opts.context_size < 0 then
+            vim.notify("difftastic-nvim: context_size must be 0 or more, ignoring " .. vim.inspect(opts.context_size), vim.log.levels.ERROR)
+        else
+            M.config.context_size = math.floor(opts.context_size)
+        end
+    end
+    if opts.min_fold_size ~= nil then
+        if type(opts.min_fold_size) ~= "number" or opts.min_fold_size < 1 then
+            vim.notify("difftastic-nvim: min_fold_size must be 1 or more, ignoring " .. vim.inspect(opts.min_fold_size), vim.log.levels.ERROR)
+        else
+            M.config.min_fold_size = math.floor(opts.min_fold_size)
+        end
+    end
+    if opts.fold_by_default ~= nil then
+        M.config.fold_by_default = opts.fold_by_default
+    end
+    if opts.fold_accent ~= nil then
+        if type(opts.fold_accent) ~= "string" or opts.fold_accent == "" then
+            vim.notify("difftastic-nvim: fold_accent must be a highlight group name, ignoring " .. vim.inspect(opts.fold_accent), vim.log.levels.ERROR)
+        else
+            M.config.fold_accent = opts.fold_accent
+        end
+    end
+    if opts.fold_fill ~= nil then
+        if type(opts.fold_fill) ~= "string" or vim.fn.strchars(opts.fold_fill) ~= 1 or vim.fn.strdisplaywidth(opts.fold_fill) ~= 1 then
+            vim.notify("difftastic-nvim: fold_fill must be a single one-cell character, ignoring " .. vim.inspect(opts.fold_fill), vim.log.levels.ERROR)
+        else
+            M.config.fold_fill = opts.fold_fill
+        end
+    end
+    if opts.auto_review ~= nil then
+        M.config.auto_review = opts.auto_review
+    end
+    if opts.max_parallel_difft_calls ~= nil then
+        local value = opts.max_parallel_difft_calls
+        if type(value) ~= "number" or value < 0 or value ~= math.floor(value) then
+            vim.notify(
+                "difftastic-nvim: max_parallel_difft_calls must be a whole number, 0 or more; ignoring " .. vim.inspect(value),
+                vim.log.levels.ERROR
+            )
+        else
+            M.config.max_parallel_difft_calls = value
+        end
+    end
     if opts.keymaps then
         -- Manual merge to preserve explicit false values (tbl_extend ignores them)
         -- Note: nil values are skipped by pairs(), so they keep the default
@@ -135,49 +218,355 @@ function M.setup(opts)
     binary.ensure_exists(M.config.download)
 end
 
+--- Keep the two diff panes in step where Neovim does not:
+--- - Resizing Neovim gives the whole change in width to the rightmost window. The
+---   panes keep splitting the space next to the tree in their last ratio instead.
+---   A resize while another tab is current is applied when the diff tab is entered.
+--- - 'scrollbind' only follows the current window, so mouse-wheel scrolling the
+---   other pane left its partner behind. Rows are aligned in both panes, so the
+---   partner takes the same top line.
+--- The autocmds remove themselves once the view is closed.
+--- @param state table Plugin state of the opened view
+local function setup_pane_sync(state)
+    local function valid()
+        return state.left_win
+            and state.right_win
+            and vim.api.nvim_win_is_valid(state.left_win)
+            and vim.api.nvim_win_is_valid(state.right_win)
+    end
+    local function widths()
+        return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+    end
+
+    -- The base pane's share of the space next to the tree, kept as a float so that
+    -- repeated resizes do not round it away. The panes open evenly split.
+    state.pane_ratio = 0.5
+    -- The widths the plugin itself gave the panes, so that its own resizes are not
+    -- taken for a split the user dragged.
+    local function remember_widths()
+        local l, r = widths()
+        state.pane_widths = { l, r }
+    end
+    local pending = false
+
+    local function apply_ratio()
+        local l, r = widths()
+        vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * state.pane_ratio + 0.5))
+        remember_widths()
+    end
+    remember_widths()
+
+    local group = vim.api.nvim_create_augroup("DifftPaneSync", { clear = true })
+    vim.api.nvim_create_autocmd("VimResized", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true -- diff view closed: drop this autocmd
+            end
+            if vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+                apply_ratio()
+            else
+                -- Window sizes of another tab are only updated when it is entered.
+                pending = true
+            end
+        end,
+    })
+    vim.api.nvim_create_autocmd("TabEnter", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            if pending and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+                pending = false
+                apply_ratio()
+            end
+        end,
+    })
+    -- A split the user drags between the panes sets the ratio for later resizes. A
+    -- tree width change takes its columns from the base pane alone, so the panes
+    -- are put back in their ratio instead.
+    vim.api.nvim_create_autocmd("WinResized", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            if pending then
+                return
+            end
+            local tree_resized, panes_resized = false, false
+            for _, win in ipairs(vim.v.event.windows or {}) do
+                if win == state.tree_win then
+                    tree_resized = true
+                elseif win == state.left_win or win == state.right_win then
+                    panes_resized = true
+                end
+            end
+            if tree_resized then
+                apply_ratio()
+            elseif panes_resized then
+                local l, r = widths()
+                local set = state.pane_widths
+                if not (set and set[1] == l and set[2] == r) then
+                    -- Dragged by the user: the new split sets the ratio.
+                    state.pane_ratio = l / (l + r)
+                    remember_widths()
+                end
+            end
+        end,
+    })
+    -- Folds belong to each window; opening or closing one in a pane is copied to
+    -- the other pane once Neovim is idle, whatever did it (keys, mouse, commands).
+    vim.api.nvim_create_autocmd("SafeState", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            fold.sync(state)
+        end,
+    })
+    vim.api.nvim_create_autocmd("WinScrolled", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            local scrolled = vim.v.event
+            local left_scrolled = scrolled[tostring(state.left_win)] ~= nil
+            local right_scrolled = scrolled[tostring(state.right_win)] ~= nil
+            if not (left_scrolled or right_scrolled) then
+                return
+            end
+            local source = left_scrolled and state.left_win or state.right_win
+            if left_scrolled and right_scrolled then
+                -- Both moved: the current pane leads.
+                local current = vim.api.nvim_get_current_win()
+                source = current == state.right_win and state.right_win or state.left_win
+            end
+            local target = source == state.left_win and state.right_win or state.left_win
+            local top = vim.fn.getwininfo(source)[1].topline
+            if vim.fn.getwininfo(target)[1].topline == top then
+                return
+            end
+            vim.api.nvim_win_call(target, function()
+                -- Keep the cursor inside the new view, or Neovim scrolls back to it.
+                local height, scrolloff = vim.api.nvim_win_get_height(0), vim.wo.scrolloff
+                local line = math.min(math.max(vim.fn.line("."), top + scrolloff), top + height - 1 - scrolloff)
+                vim.fn.winrestview({ topline = top, lnum = math.max(line, top) })
+            end)
+        end,
+    })
+end
+
+--- How long the screen size must stay unchanged after startup before a diff opened
+--- during startup is shown, and the longest wait (milliseconds).
+M.startup_settle_ms = 150
+M.startup_settle_max_ms = 1000
+
+--- Open a diff view, as `open()`, on the next main loop iteration (as the
+--- :Difft command always did). When called while Neovim starts up (for example
+--- `nvim -c 'Difft'`), only once startup has finished and the screen size has
+--- settled: a GUI may resize the grid right after startup (Neovide applies its
+--- scale factor then), and since computing the diff blocks Neovim, a resize
+--- arriving meanwhile would leave the view laid out for the old size.
+--- @param revset string|nil As for open()
+function M.open_when_ready(revset)
+    if vim.v.vim_did_enter == 1 then
+        vim.schedule(function()
+            M.open(revset)
+        end)
+        return
+    end
+    vim.api.nvim_create_autocmd("VimEnter", {
+        once = true,
+        callback = function()
+            local start = vim.uv.now()
+            local last_resize = start
+            local group = vim.api.nvim_create_augroup("DifftStartupSettle", { clear = true })
+            vim.api.nvim_create_autocmd("VimResized", {
+                group = group,
+                callback = function()
+                    last_resize = vim.uv.now()
+                end,
+            })
+            local timer, done = vim.uv.new_timer(), false
+            timer:start(25, 25, vim.schedule_wrap(function()
+                local now = vim.uv.now()
+                if done or (now - last_resize < M.startup_settle_ms and now - start < M.startup_settle_max_ms) then
+                    return
+                end
+                done = true
+                timer:stop()
+                timer:close()
+                pcall(vim.api.nvim_del_augroup_by_id, group)
+                M.open(revset)
+            end))
+        end,
+    })
+end
+
+--- Show a centred loading window over the current tab, styled like the side
+--- panel's header box: "Loading…" in the top border and the range row below it.
+--- @param kind string Range kind ("Base/Head", "Revset")
+--- @param label string|nil Range label
+--- @return number window
+local function show_loading(kind, label)
+    label = label or ""
+    local row = " " .. kind .. "  " .. label .. " "
+    local width = math.min(vim.fn.strdisplaywidth(row), math.max(1, vim.o.columns - 4))
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { row })
+    local ns = vim.api.nvim_create_namespace("difft-loading")
+    vim.api.nvim_buf_set_extmark(buf, ns, 0, 1, { end_col = 1 + #kind, hl_group = "DifftTreeMuted" })
+    if label ~= "" then
+        local start = 1 + #kind + 2
+        vim.api.nvim_buf_set_extmark(buf, ns, 0, start, { end_col = start + #label, hl_group = "DifftTreeRange" })
+    end
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].modifiable = false
+    local win = vim.api.nvim_open_win(buf, false, {
+        relative = "editor",
+        width = width,
+        height = 1,
+        row = math.max(0, math.floor((vim.o.lines - 3) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+        style = "minimal",
+        border = "rounded",
+        title = { { " Loading… ", "DifftTreeTitle" } },
+        title_pos = "center",
+        focusable = false,
+        noautocmd = true,
+    })
+    vim.wo[win].winhl = "NormalFloat:DifftTreeNormal,FloatBorder:DifftTreeDivider,FloatTitle:DifftTreeTitle"
+    return win
+end
+
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
 function M.open(revset)
     if M.state.tree_win or M.state.left_win or M.state.right_win then
         M.close()
     end
+    -- The theme may have changed without a ColorScheme event since setup().
+    highlight.refresh()
 
-    local result
-    if revset == nil then
-        result = binary.get().run_diff_unstaged(M.config.vcs)
-    elseif revset == "--staged" then
-        result = binary.get().run_diff_staged(M.config.vcs)
-    else
-        result = binary.get().run_diff(revset, M.config.vcs)
+    -- Computing a large diff blocks Neovim, so show the new tab with a loading
+    -- message first.
+    local original_tabpage = vim.api.nvim_get_current_tabpage()
+    vim.cmd("tabnew")
+    local diff_tabpage = vim.api.nvim_get_current_tabpage()
+    -- Let Neovim handle input still queued, such as a terminal resize reported while
+    -- it started up, so the message is centred on the current screen size.
+    vim.wait(0)
+    local loading_win = show_loading(range_context(revset, M.config.vcs))
+    vim.cmd("redraw")
+
+    local ok, result = pcall(function()
+        if revset == nil then
+            return binary.get().run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
+        elseif revset == "--staged" then
+            return binary.get().run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
+        end
+        return binary.get().run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+    end)
+    if vim.api.nvim_win_is_valid(loading_win) then
+        vim.api.nvim_win_close(loading_win, true)
     end
-    if not result.files or #result.files == 0 then
+    if not ok or not result.files or #result.files == 0 then
+        -- Nothing to show: leave the loading tab.
+        if vim.api.nvim_tabpage_is_valid(original_tabpage) then
+            vim.api.nvim_set_current_tabpage(original_tabpage)
+        end
+        if vim.api.nvim_tabpage_is_valid(diff_tabpage) then
+            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(diff_tabpage))
+        end
+        if not ok then
+            error(result, 0)
+        end
         vim.notify("No changes found", vim.log.levels.INFO)
         return
     end
 
     M.state.files = result.files
     M.state.current_file_idx = 1
+    -- Per-view tracking; also reset when the previous view was closed with :tabclose.
+    M.state.positions = {}
+    M.state.shown_path = nil
+    M.state.pane_side = nil
+    M.state.fold_ranges = {}
+    M.state.fold_states = {}
+    M.state.saved_fold_options = {}
+    M.state.visited = {}
+    M.state.reviewed = {}
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
-    -- Store original tabpage and create new one for diff view
-    M.state.original_tabpage = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tabnew")
-    M.state.diff_tabpage = vim.api.nvim_get_current_tabpage()
+    M.state.original_tabpage = original_tabpage
+    M.state.diff_tabpage = diff_tabpage
 
     tree.open(M.state)
     diff.open(M.state)
     keymaps.setup(M.state)
 
+    -- Remember the diff pane used last, so focus can return to it from the tree.
+    local state = M.state
+    local function track_pane()
+        if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+            return true -- diff view closed: drop this autocmd
+        end
+        local win = vim.api.nvim_get_current_win()
+        if win == state.left_win then
+            state.pane_side = "base"
+        elseif win == state.right_win then
+            state.pane_side = "head"
+        end
+    end
+    local group = vim.api.nvim_create_augroup("DifftPaneSide", { clear = true })
+    vim.api.nvim_create_autocmd("WinEnter", {
+        group = group,
+        callback = function()
+            if track_pane() then
+                return true
+            end
+            record_position()
+        end,
+    })
+    -- Keep the shown file's position current, not only when the file is left.
+    vim.api.nvim_create_autocmd("CursorMoved", {
+        group = group,
+        callback = function()
+            if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+                return true -- diff view closed: drop this autocmd
+            end
+            local win = vim.api.nvim_get_current_win()
+            if win == state.left_win or win == state.right_win then
+                record_position()
+            end
+        end,
+    })
+
     local first_idx = tree.first_file_in_display_order()
     if first_idx then
         M.show_file(first_idx)
     end
+    -- The pane focused when the view opens counts as used.
+    track_pane()
+
+    setup_pane_sync(state)
 end
 
 --- Close the diff view.
 function M.close()
     local diff_tabpage = M.state.diff_tabpage
     local original_tabpage = M.state.original_tabpage
+    -- Settle the state before it is dropped: a fold change still in one pane.
+    fold.sync(M.state)
+
+    -- Drop the view's autocmds now rather than when their events next fire.
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSide")
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSync")
 
     -- Reset state first
     M.state = {
@@ -193,6 +582,15 @@ function M.close()
         right_buf = nil,
         original_tabpage = nil,
         diff_tabpage = nil,
+        pane_side = nil,
+        positions = {},
+        shown_path = nil,
+        fold_ranges = {},
+        fold_closed = nil,
+        fold_states = {},
+        saved_fold_options = {},
+        visited = {},
+        reviewed = {},
     }
 
     -- Switch to original tabpage if valid
@@ -207,17 +605,198 @@ function M.close()
     end
 end
 
---- Show a specific file by index.
+--- Remember the cursor position in the shown file: line, column and the diff pane
+--- used last.
+function record_position()
+    local path = M.state.shown_path
+    if not path then
+        return
+    end
+    local side = M.state.pane_side or "head"
+    local pane = side == "head" and M.state.right_win or M.state.left_win
+    if not (pane and vim.api.nvim_win_is_valid(pane)) then
+        return
+    end
+    local cursor = vim.api.nvim_win_get_cursor(pane)
+    M.state.positions[path] = { line = cursor[1], col = cursor[2], side = side }
+end
+
+--- Put the cursor at a position in the shown file: line, column and diff pane. Both
+--- panes go to the line, as their rows are aligned. When a diff pane has focus,
+--- focus moves to the given pane.
+--- @param pos table `{ line, col, side }`
+local function restore_position(pos)
+    local head = pos.side == "head"
+    local pane = head and M.state.right_win or M.state.left_win
+    local partner = head and M.state.left_win or M.state.right_win
+    local buf = head and M.state.right_buf or M.state.left_buf
+    if not (pane and vim.api.nvim_win_is_valid(pane)) then
+        return
+    end
+    local line = math.max(1, math.min(pos.line, vim.api.nvim_buf_line_count(buf)))
+    -- nvim_win_set_cursor clamps the column to the line length.
+    vim.api.nvim_win_set_cursor(pane, { line, pos.col })
+    if partner and vim.api.nvim_win_is_valid(partner) then
+        local partner_buf = vim.api.nvim_win_get_buf(partner)
+        vim.api.nvim_win_set_cursor(partner, { math.min(line, vim.api.nvim_buf_line_count(partner_buf)), pos.col })
+    end
+    M.state.pane_side = pos.side
+    local current = vim.api.nvim_get_current_win()
+    if current == M.state.left_win or current == M.state.right_win then
+        vim.api.nvim_set_current_win(pane)
+    end
+end
+
+--- Toggle the reviewed mark: in the tree, of the file under the cursor, or of all
+--- files in the directory under it (marking them all unless all are marked);
+--- elsewhere, of the shown file.
+function M.toggle_reviewed()
+    local paths = {}
+    if vim.api.nvim_get_current_win() == M.state.tree_win and tree.tree then
+        local node = tree.tree:get_node()
+        if node then
+            paths = tree.file_paths(node, M.state)
+        end
+    elseif M.state.shown_path then
+        paths = { M.state.shown_path }
+    end
+    if #paths == 0 then
+        return
+    end
+    local all_reviewed = true
+    for _, path in ipairs(paths) do
+        all_reviewed = all_reviewed and M.state.reviewed[path] == true
+    end
+    for _, path in ipairs(paths) do
+        M.state.reviewed[path] = not all_reviewed or nil
+    end
+    tree.refresh_header(M.state)
+    tree.refresh_rows(M.state)
+end
+
+--- Show the next (direction 1) or previous (-1) file not marked as reviewed, in
+--- tree order and wrapping around; collapsed directories around it are opened.
+local function step_unreviewed(direction)
+    local order = tree.all_files_in_order()
+    local current = M.state.current_file_idx
+    local pos = 0
+    for i, idx in ipairs(order) do
+        if idx == current then
+            pos = i
+        end
+    end
+    for step = 1, #order do
+        local idx = order[(pos - 1 + direction * step) % #order + 1]
+        local file = M.state.files[idx]
+        if idx ~= current and file and not M.state.reviewed[file.path] then
+            tree.reveal_file(idx)
+            M.show_file(idx)
+            return
+        end
+    end
+    vim.notify("difftastic-nvim: no other file left to review", vim.log.levels.INFO)
+end
+
+--- Show the next file not marked as reviewed.
+function M.next_unreviewed()
+    step_unreviewed(1)
+end
+
+--- Show the previous file not marked as reviewed.
+function M.prev_unreviewed()
+    step_unreviewed(-1)
+end
+
+--- Move focus to the diff pane used last; the head (right) pane at first.
+function M.focus_diff()
+    local win = M.state.pane_side == "base" and M.state.left_win or M.state.right_win
+    if win and vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_set_current_win(win)
+    end
+end
+
+--- Give the two diff panes the same width, leaving the tree alone.
+function M.equalize_panes()
+    local left, right = M.state.left_win, M.state.right_win
+    if not (left and right and vim.api.nvim_win_is_valid(left) and vim.api.nvim_win_is_valid(right)) then
+        return
+    end
+    local total = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
+    -- An exact half, kept for later resizes (see setup_pane_sync).
+    M.state.pane_ratio = 0.5
+    vim.api.nvim_win_set_width(left, math.floor(total / 2))
+    M.state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
+end
+
+--- Give the side panel its configured width (tree.width); the diff panes keep
+--- their ratio.
+function M.reset_tree_width()
+    local tree_win = M.state.tree_win
+    if tree_win and vim.api.nvim_win_is_valid(tree_win) then
+        vim.api.nvim_win_set_width(tree_win, M.config.tree.width)
+    end
+end
+
+--- Act on a double click on a split of the view: the split between the diff panes
+--- gives them the same width, the side panel's right border resets its width.
+--- The action runs on the next tick.
+--- @return boolean handled True when the last mouse event was on one of them
+function M.split_double_click()
+    local mouse = vim.fn.getmousepos()
+    -- A separator belongs to the window on its left, one column past its width.
+    local function on_right_border(win)
+        return win
+            and vim.api.nvim_win_is_valid(win)
+            and mouse.winid == win
+            and mouse.line == 0
+            and mouse.wincol == vim.api.nvim_win_get_width(win) + 1
+    end
+    if on_right_border(M.state.left_win) then
+        vim.schedule(M.equalize_panes)
+        return true
+    end
+    if on_right_border(M.state.tree_win) then
+        vim.schedule(M.reset_tree_width)
+        return true
+    end
+    return false
+end
+
+--- Show a specific file by index. A file shown before gets its cursor position
+--- back; otherwise the cursor goes to the first hunk (with scroll_to_first_hunk)
+--- or the top.
 --- @param idx number File index (1-based)
 function M.show_file(idx)
     if idx < 1 or idx > #M.state.files then
         return
     end
+    -- Settle the file being left: a fold change still in one pane, the cursor.
+    fold.sync(M.state)
+    record_position()
     M.state.current_file_idx = idx
-    diff.render(M.state, M.state.files[idx])
-    if M.config.scroll_to_first_hunk then
-        diff.first_hunk(M.state)
+    local file = M.state.files[idx]
+    diff.render(M.state, file)
+    M.state.shown_path = file.path
+    M.state.visited[file.path] = true
+    if M.config.auto_review and not M.state.reviewed[file.path] then
+        M.state.reviewed[file.path] = true
+        tree.refresh_header(M.state)
     end
+    local folds_restored = fold.render(M.state, file, M.state.fold_states[file.path])
+    local pos = M.state.positions[file.path]
+    if not pos then
+        -- A file not shown before opens at its first hunk (or its top) in the pane
+        -- in use, which is also where <Tab> from the tree goes.
+        local first = M.config.scroll_to_first_hunk and diff.hunk_positions[1] or 1
+        pos = { line = first, col = 0, side = M.state.pane_side or "head" }
+    elseif not folds_restored then
+        -- The folds were rebuilt with their default states (their layout changed),
+        -- so the remembered line may now be hidden: open the fold over it.
+        fold.reveal(M.state, pos.line)
+    end
+    restore_position(pos)
+    -- The review marker of the shown file may have changed.
+    tree.refresh_rows(M.state)
     tree.highlight_current(M.state)
 end
 
