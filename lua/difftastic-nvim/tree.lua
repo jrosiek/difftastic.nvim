@@ -21,8 +21,6 @@ local GLYPHS = {
 --- Module state
 --- @type table|nil
 M.tree = nil
---- @type table<number, string>
-M.file_to_node_id = {}
 --- @type number|nil
 M.current_file_idx = nil
 --- @type number
@@ -239,13 +237,13 @@ local function sort_node(node)
     end
 end
 
-local function convert_to_nui_nodes(node, file_to_node_id)
+local function convert_to_nui_nodes(node)
     local nui_children = {}
 
     for _, child in ipairs(node.children) do
         local grandchildren = nil
         if child.is_dir then
-            grandchildren = convert_to_nui_nodes(child, file_to_node_id)
+            grandchildren = convert_to_nui_nodes(child)
         end
 
         local nui_node = NuiTree.Node({
@@ -259,10 +257,6 @@ local function convert_to_nui_nodes(node, file_to_node_id)
             deletions = child.deletions,
             moved_from = child.moved_from,
         }, grandchildren)
-
-        if child.file_idx then
-            file_to_node_id[child.file_idx] = child.path
-        end
 
         if child.is_dir then
             nui_node:expand()
@@ -446,8 +440,7 @@ function M.open(state)
     M.total_deletions = root.deletions
 
     -- Convert to nui nodes
-    M.file_to_node_id = {}
-    local nui_nodes = convert_to_nui_nodes(root, M.file_to_node_id)
+    local nui_nodes = convert_to_nui_nodes(root)
 
     -- Render header first
     render_header(state, root.additions, root.deletions)
