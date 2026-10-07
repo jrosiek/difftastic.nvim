@@ -28,7 +28,7 @@ Features:
 ==============================================================================
 2. REQUIREMENTS                                   *difftastic-nvim-requirements*
 
-- Neovim 0.9+
+- Neovim 0.10+
 - nui.nvim (https://github.com/MunifTanjim/nui.nvim)
 - difftastic with aligned_lines support (see note below)
 - jj or git version control

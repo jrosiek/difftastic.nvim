@@ -20,7 +20,7 @@ view with syntax highlighting.
 
 ### Requirements
 
-- Neovim 0.9+
+- Neovim 0.10+
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
 - [difftastic](https://github.com/Wilfred/difftastic) (`difft` command)
 - [jj](https://github.com/martinvonz/jj) or [git](https://git-scm.com/) version control
