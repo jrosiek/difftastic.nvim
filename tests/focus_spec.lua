@@ -528,17 +528,15 @@ describe("focus_diff_on_select", function()
     end)
 end)
 
---- Pane sync reacts to VimResized, WinResized and WinScrolled. Those are delivered by
---- Neovim's main loop, which does not run while a spec runs, so these specs drive a
---- child Neovim over RPC instead.
-describe("pane sync", function()
-    local child
-
-    --- Runs Lua in the child and returns its result.
+--- Starts a child Neovim with the diff view open on two 300-line files, a.txt
+--- (hunk at row 150) and b.txt (hunk at row 10), at 200x40 with the mouse enabled.
+--- Returns `remote(code, ...)` to run Lua in it, `settle()` to let its main loop
+--- deliver events, and `stop()`.
+local function child_nvim()
+    local child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed" }, { rpc = true })
     local function remote(code, ...)
         return vim.rpcrequest(child, "nvim_exec_lua", code, { ... })
     end
-
     -- Waits until the child has no input left and its windows (layout, views,
     -- cursors, closed folds) read the same on two polls in a row. Each poll is a
     -- request through the child's event queue, so work it scheduled runs first.
@@ -571,44 +569,66 @@ describe("pane sync", function()
             error("child Neovim did not settle within 5000 ms", 2)
         end
     end
+    local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+    local nui = vim.api.nvim_get_runtime_file("lua/nui/tree/init.lua", false)[1]
+    remote(
+        [[
+        local root, nui = ...
+        vim.opt.rtp:prepend(root)
+        vim.opt.rtp:append(vim.fn.fnamemodify(nui, ":h:h:h:h"))
+        vim.opt.swapfile = false
+        vim.o.columns, vim.o.lines, vim.o.mouse = 200, 40, "a"
+        local function record(path, hunk)
+            local rows = {}
+            for i = 1, 300 do
+                rows[i] = {
+                    left = { content = "line " .. i, highlights = {}, is_filler = false },
+                    right = { content = "line " .. i, highlights = {}, is_filler = false },
+                }
+            end
+            return { path = path, status = "changed", language = "Text", additions = 1, deletions = 1,
+                hunk_starts = { hunk }, aligned_lines = {}, rows = rows }
+        end
+        require("difftastic-nvim.binary").get = function()
+            return { run_diff = function() return { files = { record("a.txt", 150), record("b.txt", 10) } } end }
+        end
+        local difft = require("difftastic-nvim")
+        difft.config.vcs = "git"
+        difft.open("HEAD")
+    ]],
+        root,
+        nui
+    )
+    settle()
+    return {
+        remote = remote,
+        settle = settle,
+        stop = function()
+            vim.fn.jobstop(child)
+        end,
+    }
+end
+
+--- Pane sync reacts to VimResized, WinResized and WinScrolled. Those are delivered by
+--- Neovim's main loop, which does not run while a spec runs, so these specs drive a
+--- child Neovim over RPC instead.
+describe("pane sync", function()
+    local nvim
+
+    local function remote(code, ...)
+        return nvim.remote(code, ...)
+    end
+
+    local function settle()
+        nvim.settle()
+    end
 
     before_each(function()
-        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
-        local nui = vim.api.nvim_get_runtime_file("lua/nui/tree/init.lua", false)[1]
-        child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed" }, { rpc = true })
-        remote(
-            [[
-            local root, nui = ...
-            vim.opt.rtp:prepend(root)
-            vim.opt.rtp:append(vim.fn.fnamemodify(nui, ":h:h:h:h"))
-            vim.opt.swapfile = false
-            vim.o.columns, vim.o.lines, vim.o.mouse = 200, 40, "a"
-            local function record(path, hunk)
-                local rows = {}
-                for i = 1, 300 do
-                    rows[i] = {
-                        left = { content = "line " .. i, highlights = {}, is_filler = false },
-                        right = { content = "line " .. i, highlights = {}, is_filler = false },
-                    }
-                end
-                return { path = path, status = "changed", language = "Text", additions = 1, deletions = 1,
-                    hunk_starts = { hunk }, aligned_lines = {}, rows = rows }
-            end
-            require("difftastic-nvim.binary").get = function()
-                return { run_diff = function() return { files = { record("a.txt", 150), record("b.txt", 10) } } end }
-            end
-            local difft = require("difftastic-nvim")
-            difft.config.vcs = "git"
-            difft.open("HEAD")
-        ]],
-            root,
-            nui
-        )
-        settle()
+        nvim = child_nvim()
     end)
 
     after_each(function()
-        vim.fn.jobstop(child)
+        nvim.stop()
     end)
 
     local function widths()
@@ -782,5 +802,100 @@ describe("pane sync", function()
                 assert.are.equal(tops[1], tops[2], keys)
             end
         end)
+    end)
+end)
+
+describe("double click in the tree", function()
+    local nvim
+
+    before_each(function()
+        nvim = child_nvim()
+    end)
+
+    after_each(function()
+        nvim.stop()
+    end)
+
+    --- Double clicks the tree row showing `path` and returns the shown file and
+    --- the focused pane ("tree", "base" or "head").
+    local function double_click(path)
+        nvim.remote(
+            [[
+            local path = ...
+            local s = require("difftastic-nvim").state
+            local tree = require("difftastic-nvim.tree")
+            local pos = vim.api.nvim_win_get_position(s.tree_win)
+            for linenr = 1, vim.api.nvim_buf_line_count(s.tree_buf) do
+                local node = tree.tree:get_node(linenr)
+                if node and node.file_idx and s.files[node.file_idx].path == path then
+                    for _ = 1, 2 do
+                        vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + linenr - 1, pos[2] + 4)
+                        vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + linenr - 1, pos[2] + 4)
+                    end
+                    return
+                end
+            end
+            error("no tree row for " .. path)
+        ]],
+            path
+        )
+        nvim.settle()
+        return nvim.remote([[
+            local s = require("difftastic-nvim").state
+            local win = vim.api.nvim_get_current_win()
+            local focus = win == s.tree_win and "tree" or win == s.left_win and "base" or win == s.right_win and "head"
+            return { s.files[s.current_file_idx].path, focus, vim.api.nvim_win_get_cursor(win)[1] }
+        ]])
+    end
+
+    it("opens the file and focuses its diff pane", function()
+        local shown = double_click("b.txt")
+
+        assert.are.same({ "b.txt", "head", 11 }, shown)
+    end)
+
+    it("returns to the position a visited file was left at", function()
+        nvim.remote([[
+            local s = require("difftastic-nvim").state
+            vim.api.nvim_set_current_win(s.left_win)
+            vim.api.nvim_win_set_cursor(s.left_win, { 42, 0 })
+        ]])
+        nvim.settle()
+        local visited = nvim.remote("local s = require('difftastic-nvim').state; return s.files[s.current_file_idx].path")
+        local other = visited == "a.txt" and "b.txt" or "a.txt"
+
+        double_click(other)
+        local shown = double_click(visited)
+
+        assert.are.same({ visited, "base", 42 }, shown)
+    end)
+
+    it("ignores a double click on a window separator while the tree has focus", function()
+        nvim.remote([[
+            local s = require("difftastic-nvim").state
+            vim.api.nvim_set_current_win(s.tree_win)
+            local pos = vim.api.nvim_win_get_position(s.left_win)
+            local col = pos[2] + vim.api.nvim_win_get_width(s.left_win)
+            for _ = 1, 2 do
+                vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + 5, col)
+                vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + 5, col)
+            end
+        ]])
+        nvim.settle()
+
+        local state = nvim.remote([[
+            local s = require("difftastic-nvim").state
+            return { vim.api.nvim_get_current_win() == s.tree_win, vim.api.nvim_get_mode().mode }
+        ]])
+        assert.are.same({ true, "n" }, state)
+    end)
+
+    it("keeps focus in the tree when focus_diff_on_select is off", function()
+        nvim.remote("require('difftastic-nvim').config.focus_diff_on_select = false")
+
+        local shown = double_click("b.txt")
+
+        assert.are.equal("b.txt", shown[1])
+        assert.are.equal("tree", shown[2])
     end)
 end)

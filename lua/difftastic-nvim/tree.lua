@@ -478,7 +478,7 @@ function M.open(state)
     local difft = require("difftastic-nvim")
     local keys = difft.config.keymaps
 
-    vim.keymap.set("n", keys.select, function()
+    local function select()
         local node = M.tree:get_node()
         if not node then return end
 
@@ -495,7 +495,18 @@ function M.open(state)
             end
             M.tree:render()
         end
-    end, { buffer = state.tree_buf })
+    end
+    vim.keymap.set("n", keys.select, select, { buffer = state.tree_buf })
+    -- The first click of a double click has already put the cursor on the row. A
+    -- double click elsewhere, such as on a window separator, keeps its default.
+    vim.keymap.set("n", "<2-LeftMouse>", function()
+        local mouse = vim.fn.getmousepos()
+        if mouse.winid ~= state.tree_win or mouse.line == 0 then
+            return "<2-LeftMouse>"
+        end
+        vim.schedule(select)
+        return ""
+    end, { buffer = state.tree_buf, expr = true })
 
     vim.keymap.set("n", keys.close, difft.close, { buffer = state.tree_buf })
 end
