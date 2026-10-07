@@ -141,7 +141,8 @@ Default keybindings:
     ]c          Next hunk (see |difftastic-nvim-hunk-wrap-file|)
     [c          Previous hunk (see |difftastic-nvim-hunk-wrap-file|)
     <Tab>       Toggle focus between file tree and diff panes (from the
-                tree, back to the diff pane used last)
+                tree, back to the diff pane used last; the head pane at
+                first)
     <CR>        Select file or toggle directory (in tree)
     q           Close diff view
 
@@ -252,7 +253,9 @@ hunk_wrap_file ~
 
 scroll_to_first_hunk ~
     When enabled, opening a file in the diff view will auto-scroll to the
-    first hunk of changes instead of the top of the file.
+    first hunk of changes instead of the top of the file. A file shown
+    before in the same diff view returns to the cursor position and pane
+    (base or head) it was left at instead.
 
     Default: true
 

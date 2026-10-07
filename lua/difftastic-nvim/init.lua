@@ -7,6 +7,8 @@ local tree = require("difftastic-nvim.tree")
 local highlight = require("difftastic-nvim.highlight")
 local keymaps = require("difftastic-nvim.keymaps")
 
+local record_position -- defined with the per-file positions below
+
 --- Default configuration
 M.config = {
     download = false,
@@ -58,6 +60,8 @@ M.state = {
     original_tabpage = nil,
     diff_tabpage = nil,
     pane_side = nil,
+    positions = {},
+    shown_path = nil,
 }
 
 local function git_range_label(revset)
@@ -158,6 +162,10 @@ function M.open(revset)
 
     M.state.files = result.files
     M.state.current_file_idx = 1
+    -- Per-view tracking; also reset when the previous view was closed with :tabclose.
+    M.state.positions = {}
+    M.state.shown_path = nil
+    M.state.pane_side = nil
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
     -- Store original tabpage and create new one for diff view
@@ -182,9 +190,28 @@ function M.open(revset)
             state.pane_side = "head"
         end
     end
+    local group = vim.api.nvim_create_augroup("DifftPaneSide", { clear = true })
     vim.api.nvim_create_autocmd("WinEnter", {
-        group = vim.api.nvim_create_augroup("DifftPaneSide", { clear = true }),
-        callback = track_pane,
+        group = group,
+        callback = function()
+            if track_pane() then
+                return true
+            end
+            record_position()
+        end,
+    })
+    -- Keep the shown file's position current, not only when the file is left.
+    vim.api.nvim_create_autocmd("CursorMoved", {
+        group = group,
+        callback = function()
+            if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+                return true -- diff view closed: drop this autocmd
+            end
+            local win = vim.api.nvim_get_current_win()
+            if win == state.left_win or win == state.right_win then
+                record_position()
+            end
+        end,
     })
 
     local first_idx = tree.first_file_in_display_order()
@@ -219,6 +246,8 @@ function M.close()
         original_tabpage = nil,
         diff_tabpage = nil,
         pane_side = nil,
+        positions = {},
+        shown_path = nil,
     }
 
     -- Switch to original tabpage if valid
@@ -233,17 +262,69 @@ function M.close()
     end
 end
 
---- Show a specific file by index.
+--- Remember the cursor position in the shown file: line, column and the diff pane
+--- used last.
+function record_position()
+    local path = M.state.shown_path
+    if not path then
+        return
+    end
+    local side = M.state.pane_side or "head"
+    local pane = side == "head" and M.state.right_win or M.state.left_win
+    if not (pane and vim.api.nvim_win_is_valid(pane)) then
+        return
+    end
+    local cursor = vim.api.nvim_win_get_cursor(pane)
+    M.state.positions[path] = { line = cursor[1], col = cursor[2], side = side }
+end
+
+--- Put the cursor at a position in the shown file: line, column and diff pane. Both
+--- panes go to the line, as their rows are aligned. When a diff pane has focus,
+--- focus moves to the given pane.
+--- @param pos table `{ line, col, side }`
+local function restore_position(pos)
+    local head = pos.side == "head"
+    local pane = head and M.state.right_win or M.state.left_win
+    local partner = head and M.state.left_win or M.state.right_win
+    local buf = head and M.state.right_buf or M.state.left_buf
+    if not (pane and vim.api.nvim_win_is_valid(pane)) then
+        return
+    end
+    local line = math.max(1, math.min(pos.line, vim.api.nvim_buf_line_count(buf)))
+    -- nvim_win_set_cursor clamps the column to the line length.
+    vim.api.nvim_win_set_cursor(pane, { line, pos.col })
+    if partner and vim.api.nvim_win_is_valid(partner) then
+        local partner_buf = vim.api.nvim_win_get_buf(partner)
+        vim.api.nvim_win_set_cursor(partner, { math.min(line, vim.api.nvim_buf_line_count(partner_buf)), pos.col })
+    end
+    M.state.pane_side = pos.side
+    local current = vim.api.nvim_get_current_win()
+    if current == M.state.left_win or current == M.state.right_win then
+        vim.api.nvim_set_current_win(pane)
+    end
+end
+
+--- Show a specific file by index. A file shown before gets its cursor position
+--- back; otherwise the cursor goes to the first hunk (with scroll_to_first_hunk)
+--- or the top.
 --- @param idx number File index (1-based)
 function M.show_file(idx)
     if idx < 1 or idx > #M.state.files then
         return
     end
+    record_position()
     M.state.current_file_idx = idx
-    diff.render(M.state, M.state.files[idx])
-    if M.config.scroll_to_first_hunk then
-        diff.first_hunk(M.state)
+    local file = M.state.files[idx]
+    diff.render(M.state, file)
+    M.state.shown_path = file.path
+    local pos = M.state.positions[file.path]
+    if not pos then
+        -- A file not shown before opens at its first hunk (or its top) in the pane
+        -- in use, which is also where <Tab> from the tree goes.
+        local first = M.config.scroll_to_first_hunk and diff.hunk_positions[1] or 1
+        pos = { line = first, col = 0, side = M.state.pane_side or "head" }
     end
+    restore_position(pos)
     tree.highlight_current(M.state)
 end
 

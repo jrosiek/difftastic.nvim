@@ -143,7 +143,7 @@ require("difftastic-nvim").setup({
     vcs = "jj",                    -- "jj" (default) or "git"
     highlight_mode = "treesitter", -- "treesitter" (default) or "difftastic"
     hunk_wrap_file = true,          -- Next hunk at last hunk goes to next file
-    scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
+    scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
     snacks_picker = {
         enabled = false,          -- opt-in snacks.nvim integration (default: false)
         limit = 200,              -- number of revisions/commits to list in :DifftPick
