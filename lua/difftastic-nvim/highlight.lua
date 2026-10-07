@@ -136,10 +136,24 @@ local function apply_highlights(overrides)
     end
 end
 
+--- Overrides given to setup(), reused whenever the groups are derived again.
+local current_overrides = nil
+
+--- Derive the highlight groups again from the current colours. Some theme loaders
+--- set the colours without a ColorScheme event, after setup() ran (NvChad applies
+--- its theme from precompiled files once plugins are set up), which would leave
+--- the derived groups blended from Neovim's default theme.
+function M.refresh()
+    if current_overrides then
+        apply_highlights(current_overrides)
+    end
+end
+
 --- Setup highlight groups with optional overrides.
 --- @param overrides table<string, vim.api.keyset.highlight>|nil User overrides
 function M.setup(overrides)
     overrides = overrides or {}
+    current_overrides = overrides
 
     -- Apply highlights now
     apply_highlights(overrides)
@@ -158,6 +172,15 @@ function M.setup(overrides)
             apply_highlights(overrides)
         end,
     })
+    -- Once the whole config has run, in case its theme was applied after setup()
+    -- without a ColorScheme event.
+    if vim.v.vim_did_enter == 0 then
+        vim.api.nvim_create_autocmd("VimEnter", {
+            group = vim.api.nvim_create_augroup("DifftHighlightsStartup", { clear = true }),
+            once = true,
+            callback = M.refresh,
+        })
+    end
 end
 
 return M

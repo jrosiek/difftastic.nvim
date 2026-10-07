@@ -449,6 +449,8 @@ function M.open(revset)
     if M.state.tree_win or M.state.left_win or M.state.right_win then
         M.close()
     end
+    -- The theme may have changed without a ColorScheme event since setup().
+    highlight.refresh()
 
     -- Computing a large diff blocks Neovim, so show the new tab with a loading
     -- message first.
