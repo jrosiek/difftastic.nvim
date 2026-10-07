@@ -423,8 +423,11 @@ fn git_rename_args(mode: &DiffMode) -> Vec<String> {
 
     match mode {
         DiffMode::Range(range) => {
-            // Resolve like the content diff does: a bare revision means `rev^..rev`,
-            // not `rev` against the working tree.
+            // The rename map decides where a renamed file's old content is read from,
+            // so it must compare the same two sides as the content diff. Given a
+            // bare revision, `git diff` compares it with the working tree: it would
+            // miss the renames made in that revision and report unrelated
+            // working-tree renames. Resolve it like the content diff, as `rev^..rev`.
             let (old_ref, new_ref) = parse_git_range(range);
             args.push(format!("{old_ref}..{new_ref}"));
         }
