@@ -281,7 +281,9 @@ focus_diff_on_select ~
 context_size ~
     Number of unchanged lines kept visible above and below each change. The
     remaining unchanged lines are folded, in both diff panes. A file without
-    changes is folded as a whole. 0 turns folding off: the plugin adds no
+    changes is folded as a whole. Opening or closing one of these folds in
+    one pane does the same in the other. Folds deleted or added in a pane
+    (|zE|, |zd|, |zf|, |:fold|) are put back as the plugin made them. 0 turns folding off: the plugin adds no
     folds and leaves the panes' fold options alone. A negative value is
     reported as an error and ignored.
 

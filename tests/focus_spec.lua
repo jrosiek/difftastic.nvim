@@ -1102,3 +1102,257 @@ describe("double click on the side panel's right border", function()
         assert.are.equal(55, widths().tree)
     end)
 end)
+
+describe("fold sync between the diff panes", function()
+    local nvim
+
+    before_each(function()
+        nvim = child_nvim()
+    end)
+
+    after_each(function()
+        nvim.stop()
+    end)
+
+    --- Closed state of every fold range in both panes, plus both toplines.
+    local function state()
+        return nvim.remote([[
+            local s = require("difftastic-nvim").state
+            local function closed(win)
+                return vim.api.nvim_win_call(win, function()
+                    local result = {}
+                    for i, r in ipairs(s.fold_ranges) do
+                        result[i] = vim.fn.foldclosed(r[1]) ~= -1
+                    end
+                    return result
+                end)
+            end
+            return {
+                left = closed(s.left_win),
+                right = closed(s.right_win),
+                tops = { vim.fn.getwininfo(s.left_win)[1].topline, vim.fn.getwininfo(s.right_win)[1].topline },
+                ranges = s.fold_ranges,
+            }
+        ]])
+    end
+
+    local function focus(side)
+        nvim.remote("vim.api.nvim_set_current_win(require('difftastic-nvim').state[...])", side)
+        nvim.settle()
+    end
+
+    local function keys(input)
+        nvim.remote("vim.api.nvim_input(...)", input)
+        nvim.settle()
+    end
+
+    local function assert_in_sync(expected)
+        local st = state()
+        assert.are.same(st.left, st.right)
+        assert.are.equal(st.tops[1], st.tops[2])
+        if expected then
+            assert.are.same(expected, st.left)
+        end
+        return st
+    end
+
+    it("starts with the same closed folds in both panes", function()
+        local st = assert_in_sync({ true, true })
+        assert.are.same({ { 1, 147 }, { 155, 300 } }, st.ranges)
+    end)
+
+    for _, side in ipairs({ "left_win", "right_win" }) do
+        describe("from the " .. (side == "left_win" and "base" or "head") .. " pane", function()
+            before_each(function()
+                focus(side)
+            end)
+
+            it("copies zo and zc", function()
+                keys("200Gzo")
+                assert_in_sync({ true, false })
+                keys("zc")
+                assert_in_sync({ true, true })
+            end)
+
+            it("copies za", function()
+                keys("1Gza")
+                assert_in_sync({ false, true })
+            end)
+
+            it("copies zR and zM", function()
+                keys("zR")
+                assert_in_sync({ false, false })
+                keys("zM")
+                assert_in_sync({ true, true })
+            end)
+
+            it("copies :foldopen and :foldclose", function()
+                keys(":10foldopen<CR>")
+                assert_in_sync({ false, true })
+                keys(":10foldclose<CR>")
+                assert_in_sync({ true, true })
+            end)
+
+            it("copies a fold opened by a search", function()
+                keys("gg/line 250<CR>")
+                local st = assert_in_sync({ true, false })
+                assert.is_true(st.tops[1] > 150)
+            end)
+        end)
+    end
+
+    it("copies a change made just before switching panes", function()
+        focus("left_win")
+        -- One input, as from a mapping: the sync sees the other pane current.
+        keys("200Gzo<C-w>l")
+        assert_in_sync({ true, false })
+        keys("zc<C-w>h")
+        assert_in_sync({ true, true })
+    end)
+
+    it("copies changes made through the API", function()
+        nvim.remote([[
+            local s = require("difftastic-nvim").state
+            vim.api.nvim_win_call(s.right_win, function() vim.cmd("1,147foldopen") end)
+        ]])
+        nvim.settle()
+        assert_in_sync({ false, true })
+    end)
+
+    it("keeps working after a file switch", function()
+        nvim.remote("require('difftastic-nvim').show_file(2)")
+        nvim.settle()
+        local st = assert_in_sync()
+        assert.are.same({ { 1, 7 }, { 15, 300 } }, st.ranges)
+
+        focus("right_win")
+        keys("100Gzo")
+        assert_in_sync({ true, false })
+    end)
+
+    --- Opens fold 1 and keeps fold 2 closed in both panes, then runs `code` in the
+    --- child before the next sync, so it can change both panes at once.
+    local function break_folds(code)
+        focus("left_win")
+        keys("1Gzo")
+        assert_in_sync({ false, true })
+        nvim.remote([[
+            local s = require("difftastic-nvim").state
+            local left, right = s.left_win, s.right_win
+            ]] .. code)
+        nvim.settle()
+    end
+
+    it("keeps the state of the folds that survive a partial deletion", function()
+        break_folds([[
+            -- Delete only fold 2 in the base pane.
+            vim.api.nvim_win_call(left, function() vim.cmd("200normal! zd") end)
+        ]])
+
+        -- Fold 1 stays open, fold 2 is back and closed (the head pane's state).
+        assert_in_sync({ false, true })
+    end)
+
+    it("keeps each fold's state when the panes lost different folds", function()
+        break_folds([[
+            vim.api.nvim_win_call(left, function() vim.cmd("1normal! zd") end)
+            vim.api.nvim_win_call(right, function() vim.cmd("200normal! zd") end)
+        ]])
+
+        -- Each fold takes its state from the pane that still has it.
+        assert_in_sync({ false, true })
+    end)
+
+    it("keeps the last states when both panes lost all their folds", function()
+        break_folds([[
+            vim.api.nvim_win_call(left, function() vim.cmd("normal! zE") end)
+            vim.api.nvim_win_call(right, function() vim.cmd("normal! zE") end)
+        ]])
+
+        assert_in_sync({ false, true })
+    end)
+
+    it("keeps a fold opened in the same pane and moment another fold was deleted", function()
+        break_folds([[
+            vim.api.nvim_win_call(left, function()
+                vim.cmd("200foldopen")
+                vim.cmd("1normal! zd")
+            end)
+        ]])
+
+        -- Fold 2 keeps its new open state; fold 1 comes back open from the head pane.
+        assert_in_sync({ false, false })
+    end)
+
+    it("merges fold states when both panes were changed and damaged at once", function()
+        break_folds([[
+            vim.api.nvim_win_call(left, function()
+                vim.cmd("200foldopen")
+                vim.cmd("1normal! zd")
+            end)
+            vim.api.nvim_win_call(right, function()
+                vim.cmd("1foldclose")
+                vim.cmd("200normal! zd")
+            end)
+        ]])
+
+        -- Fold 1 survives only in the head pane (now closed), fold 2 only in the
+        -- base pane (now open).
+        assert_in_sync({ true, false })
+    end)
+
+    it("removes folds added in both panes", function()
+        break_folds([[
+            vim.api.nvim_win_call(left, function() vim.cmd("149,150fold") end)
+            vim.api.nvim_win_call(right, function() vim.cmd("152,153fold") end)
+        ]])
+
+        assert_in_sync({ false, true })
+        local levels = nvim.remote([[
+            local s = require("difftastic-nvim").state
+            local result = {}
+            for _, win in ipairs({ s.left_win, s.right_win }) do
+                result[#result + 1] = vim.api.nvim_win_call(win, function()
+                    return { vim.fn.foldlevel(149), vim.fn.foldlevel(150), vim.fn.foldlevel(152), vim.fn.foldlevel(153) }
+                end)
+            end
+            return result
+        ]])
+        assert.are.same({ { 0, 0, 0, 0 }, { 0, 0, 0, 0 } }, levels)
+    end)
+
+    for _, case in ipairs({
+        { name = "deleted with zE", keys = "zE" },
+        { name = "deleted with zD", keys = "200GzD" },
+        { name = "deleted with zd", keys = "1Gzd" },
+        { name = "added with zf on context lines", keys = "149Gzfj" },
+        { name = "added with zf inside an open fold", keys = "200GzoGzfk" },
+        { name = "added with :fold", keys = ":150,152fold<CR>" },
+    }) do
+        it("restores the plugin's folds after they are " .. case.name, function()
+            focus("left_win")
+            keys(case.keys)
+            nvim.settle()
+
+            local st = assert_in_sync()
+            local left_intact = nvim.remote([[
+                local s = require("difftastic-nvim").state
+                return vim.api.nvim_win_call(s.left_win, function()
+                    local levels = {}
+                    for _, l in ipairs({ 1, 147, 148, 150, 151, 154, 155, 299, 300 }) do
+                        levels[#levels + 1] = vim.fn.foldlevel(l)
+                    end
+                    return levels
+                end)
+            ]])
+            assert.are.same({ 1, 1, 0, 0, 0, 0, 1, 1, 1 }, left_intact)
+            assert.are.same({ { 1, 147 }, { 155, 300 } }, st.ranges)
+            -- And syncing still works afterwards.
+            keys("zM")
+            assert_in_sync({ true, true })
+            keys("zR")
+            assert_in_sync({ false, false })
+            assert.are.equal("", nvim.remote("return vim.v.errmsg"))
+        end)
+    end
+end)

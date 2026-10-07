@@ -76,6 +76,7 @@ M.state = {
     positions = {},
     shown_path = nil,
     fold_ranges = {},
+    fold_closed = nil,
     saved_fold_options = {},
 }
 
@@ -287,6 +288,17 @@ local function setup_pane_sync(state)
             end
         end,
     })
+    -- Folds belong to each window; opening or closing one in a pane is copied to
+    -- the other pane once Neovim is idle, whatever did it (keys, mouse, commands).
+    vim.api.nvim_create_autocmd("SafeState", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            fold.sync(state)
+        end,
+    })
     vim.api.nvim_create_autocmd("WinScrolled", {
         group = group,
         callback = function()
@@ -434,6 +446,7 @@ function M.close()
         positions = {},
         shown_path = nil,
         fold_ranges = {},
+        fold_closed = nil,
         saved_fold_options = {},
     }
 
