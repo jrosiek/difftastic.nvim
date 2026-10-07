@@ -127,6 +127,18 @@ describe("focus_diff from the tree", function()
         assert.are.equal(opened_in, vim.api.nvim_get_current_win())
     end)
 
+    it("leaves no autocmds of the view behind once it is closed", function()
+        for _ = 1, 3 do
+            difft.open("HEAD")
+            difft.close()
+        end
+
+        for _, group in ipairs({ "DifftTreeResize", "DifftPaneSide", "DifftPaneSync" }) do
+            local ok, cmds = pcall(vim.api.nvim_get_autocmds, { group = group })
+            assert.are.same({}, ok and cmds or {}, group)
+        end
+    end)
+
     it("removes its autocmd on the first window change after the view is closed", function()
         difft.open("HEAD")
         difft.close()
@@ -411,5 +423,262 @@ describe("per-file cursor positions", function()
         show("b.txt")
 
         assert.are.equal(21, cursor(difft.state.left_win)[1])
+    end)
+end)
+
+--- Pane sync reacts to VimResized, WinResized and WinScrolled. Those are delivered by
+--- Neovim's main loop, which does not run while a spec runs, so these specs drive a
+--- child Neovim over RPC instead.
+describe("pane sync", function()
+    local child
+
+    --- Runs Lua in the child and returns its result.
+    local function remote(code, ...)
+        return vim.rpcrequest(child, "nvim_exec_lua", code, { ... })
+    end
+
+    -- Waits until the child has no input left and its windows (layout, views,
+    -- cursors, closed folds) read the same on two polls in a row. Each poll is a
+    -- request through the child's event queue, so work it scheduled runs first.
+    local function settle()
+        local last
+        local settled = vim.wait(5000, function()
+            local snapshot = remote([[
+                if vim.fn.getchar(1) ~= 0 or vim.api.nvim_get_mode().blocking then
+                    return nil
+                end
+                local wins = {}
+                for _, win in ipairs(vim.api.nvim_list_wins()) do
+                    wins[#wins + 1] = vim.api.nvim_win_call(win, function()
+                        local closed = {}
+                        for lnum = 1, vim.fn.line("$") do
+                            if vim.fn.foldclosed(lnum) == lnum then
+                                closed[#closed + 1] = lnum
+                            end
+                        end
+                        return { win, vim.fn.winlayout(), vim.fn.winsaveview(), vim.api.nvim_win_get_width(win), vim.api.nvim_win_get_height(win), closed }
+                    end)
+                end
+                return vim.inspect({ vim.api.nvim_get_current_win(), vim.api.nvim_get_mode().mode, wins })
+            ]])
+            local stable = snapshot ~= nil and snapshot == last
+            last = snapshot
+            return stable
+        end, 1)
+        if not settled then
+            error("child Neovim did not settle within 5000 ms", 2)
+        end
+    end
+
+    before_each(function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local nui = vim.api.nvim_get_runtime_file("lua/nui/tree/init.lua", false)[1]
+        child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed" }, { rpc = true })
+        remote(
+            [[
+            local root, nui = ...
+            vim.opt.rtp:prepend(root)
+            vim.opt.rtp:append(vim.fn.fnamemodify(nui, ":h:h:h:h"))
+            vim.opt.swapfile = false
+            vim.o.columns, vim.o.lines, vim.o.mouse = 200, 40, "a"
+            local function record(path, hunk)
+                local rows = {}
+                for i = 1, 300 do
+                    rows[i] = {
+                        left = { content = "line " .. i, highlights = {}, is_filler = false },
+                        right = { content = "line " .. i, highlights = {}, is_filler = false },
+                    }
+                end
+                return { path = path, status = "changed", language = "Text", additions = 1, deletions = 1,
+                    hunk_starts = { hunk }, aligned_lines = {}, rows = rows }
+            end
+            require("difftastic-nvim.binary").get = function()
+                return { run_diff = function() return { files = { record("a.txt", 150), record("b.txt", 10) } } end }
+            end
+            local difft = require("difftastic-nvim")
+            difft.config.vcs = "git"
+            difft.open("HEAD")
+        ]],
+            root,
+            nui
+        )
+        settle()
+    end)
+
+    after_each(function()
+        vim.fn.jobstop(child)
+    end)
+
+    local function widths()
+        return remote([[
+            local s = require("difftastic-nvim").state
+            return {
+                tree = vim.api.nvim_win_get_width(s.tree_win),
+                left = vim.api.nvim_win_get_width(s.left_win),
+                right = vim.api.nvim_win_get_width(s.right_win),
+            }
+        ]])
+    end
+
+    local function toplines()
+        return remote([[
+            local s = require("difftastic-nvim").state
+            return { vim.fn.getwininfo(s.left_win)[1].topline, vim.fn.getwininfo(s.right_win)[1].topline }
+        ]])
+    end
+
+    local function set_columns(n)
+        remote("vim.o.columns = ...", n)
+        settle()
+    end
+
+    local function assert_split(w, total)
+        assert.are.equal(total, w.left + w.right)
+        assert.is_true(math.abs(w.left - w.right) <= 1, vim.inspect(w))
+    end
+
+    describe("on Neovim resize", function()
+        it("splits the space between the panes in their ratio", function()
+            local before = widths()
+
+            set_columns(260)
+            local grown = widths()
+            assert.are.equal(before.tree, grown.tree)
+            assert.are.equal(before.left + before.right + 60, grown.left + grown.right)
+            assert.is_true(math.abs(grown.left / (grown.left + grown.right) - before.left / (before.left + before.right)) < 0.02)
+
+            set_columns(150)
+            local shrunk = widths()
+            assert.are.equal(before.tree, shrunk.tree)
+            assert.are.equal(before.left + before.right - 50, shrunk.left + shrunk.right)
+            assert.is_true(math.abs(shrunk.left / (shrunk.left + shrunk.right) - before.left / (before.left + before.right)) < 0.02)
+        end)
+
+        it("keeps a ratio the user set by resizing a pane", function()
+            local w = widths()
+            remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.left_win, ...)", math.floor((w.left + w.right) / 4))
+            settle()
+
+            set_columns(300)
+
+            w = widths()
+            assert.is_true(math.abs(w.left / (w.left + w.right) - 0.25) < 0.02, vim.inspect(w))
+        end)
+
+        it("keeps the pane ratio when the tree width changes", function()
+            local w = widths()
+            remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.left_win, ...)", math.floor((w.left + w.right) / 4))
+            settle()
+            local total = w.left + w.right
+
+            remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.tree_win, ...)", w.tree + 20)
+            settle()
+
+            w = widths()
+            assert.are.equal(total - 20, w.left + w.right)
+            assert.is_true(math.abs(w.left / (w.left + w.right) - 0.25) < 0.02, vim.inspect(w))
+            -- And the next Neovim resize still uses that ratio.
+            set_columns(300)
+            w = widths()
+            assert.is_true(math.abs(w.left / (w.left + w.right) - 0.25) < 0.02, vim.inspect(w))
+        end)
+
+        --- Resizes Neovim through a series of odd and even widths, back to 200.
+        local function cycle_sizes(check)
+            for _ = 1, 3 do
+                for _, columns in ipairs({ 157, 211, 133, 199, 171, 240, 183, 200 }) do
+                    set_columns(columns)
+                    if check then
+                        check(widths(), columns)
+                    end
+                end
+            end
+        end
+
+        it("keeps an even split through many resizes", function()
+            local start = widths()
+
+            cycle_sizes(function(w, columns)
+                assert.is_true(math.abs(w.left - w.right) <= 1, columns .. ": " .. vim.inspect(w))
+            end)
+
+            assert.are.same(start, widths())
+        end)
+
+        it("keeps a dragged split through many resizes", function()
+            local w = widths()
+            remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.left_win, ...)", math.floor((w.left + w.right) / 4))
+            settle()
+            local dragged = widths()
+
+            cycle_sizes()
+
+            assert.are.same(dragged, widths())
+        end)
+
+        it("applies a resize made in another tab when the diff tab is entered", function()
+            local before = widths()
+            remote("vim.cmd('tabnew')")
+            settle()
+
+            set_columns(260)
+            remote("vim.api.nvim_set_current_tabpage(require('difftastic-nvim').state.diff_tabpage)")
+            settle()
+
+            local w = widths()
+            assert.are.equal(before.tree, w.tree)
+            assert.are.equal(before.left + before.right + 60, w.left + w.right)
+            assert.is_true(math.abs(w.left / (w.left + w.right) - before.left / (before.left + before.right)) < 0.02, vim.inspect(w))
+        end)
+    end)
+
+    describe("on mouse-wheel scroll", function()
+        local function focus(side)
+            remote("local s = require('difftastic-nvim').state; vim.api.nvim_set_current_win(s[...]); vim.api.nvim_win_set_cursor(0, { 1, 0 })", side)
+            settle()
+        end
+
+        local function wheel(side)
+            remote(
+                [[
+                local win = require("difftastic-nvim").state[...]
+                local pos = vim.api.nvim_win_get_position(win)
+                vim.api.nvim_input_mouse("wheel", "down", "", 0, pos[1] + 2, pos[2] + 2)
+            ]],
+                side
+            )
+            settle()
+        end
+
+        for _, case in ipairs({
+            { name = "the head pane while the base pane has focus", focus = "left_win", scroll = "right_win" },
+            { name = "the base pane while the head pane has focus", focus = "right_win", scroll = "left_win" },
+            { name = "the focused pane", focus = "left_win", scroll = "left_win" },
+        }) do
+            it("keeps both panes at the same line when scrolling " .. case.name, function()
+                focus(case.focus)
+
+                wheel(case.scroll)
+                wheel(case.scroll)
+
+                local tops = toplines()
+                assert.is_true(tops[1] > 1, "pane did not scroll")
+                assert.are.equal(tops[1], tops[2])
+                remote("vim.cmd('redraw')")
+                settle()
+                tops = toplines()
+                assert.are.equal(tops[1], tops[2])
+            end)
+        end
+
+        it("still keeps keyboard scrolling in sync", function()
+            focus("left_win")
+            for _, keys in ipairs({ "<C-d>", "<C-e><C-e>", "G", "gg" }) do
+                remote("vim.api.nvim_input(...)", keys)
+                settle()
+                local tops = toplines()
+                assert.are.equal(tops[1], tops[2], keys)
+            end
+        end)
     end)
 end)

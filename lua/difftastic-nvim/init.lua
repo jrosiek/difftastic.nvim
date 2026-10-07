@@ -140,6 +140,137 @@ function M.setup(opts)
     binary.ensure_exists(M.config.download)
 end
 
+--- Keep the two diff panes in step where Neovim does not:
+--- - Resizing Neovim gives the whole change in width to the rightmost window. The
+---   panes keep splitting the space next to the tree in their last ratio instead.
+---   A resize while another tab is current is applied when the diff tab is entered.
+--- - 'scrollbind' only follows the current window, so mouse-wheel scrolling the
+---   other pane left its partner behind. Rows are aligned in both panes, so the
+---   partner takes the same top line.
+--- The autocmds remove themselves once the view is closed.
+--- @param state table Plugin state of the opened view
+local function setup_pane_sync(state)
+    local function valid()
+        return state.left_win
+            and state.right_win
+            and vim.api.nvim_win_is_valid(state.left_win)
+            and vim.api.nvim_win_is_valid(state.right_win)
+    end
+    local function widths()
+        return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+    end
+
+    -- The base pane's share of the space next to the tree, kept as a float so that
+    -- repeated resizes do not round it away. The panes open evenly split.
+    state.pane_ratio = 0.5
+    -- The widths the plugin itself gave the panes, so that its own resizes are not
+    -- taken for a split the user dragged.
+    local function remember_widths()
+        local l, r = widths()
+        state.pane_widths = { l, r }
+    end
+    local pending = false
+
+    local function apply_ratio()
+        local l, r = widths()
+        vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * state.pane_ratio + 0.5))
+        remember_widths()
+    end
+    remember_widths()
+
+    local group = vim.api.nvim_create_augroup("DifftPaneSync", { clear = true })
+    vim.api.nvim_create_autocmd("VimResized", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true -- diff view closed: drop this autocmd
+            end
+            if vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+                apply_ratio()
+            else
+                -- Window sizes of another tab are only updated when it is entered.
+                pending = true
+            end
+        end,
+    })
+    vim.api.nvim_create_autocmd("TabEnter", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            if pending and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+                pending = false
+                apply_ratio()
+            end
+        end,
+    })
+    -- A split the user drags between the panes sets the ratio for later resizes. A
+    -- tree width change takes its columns from the base pane alone, so the panes
+    -- are put back in their ratio instead.
+    vim.api.nvim_create_autocmd("WinResized", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            if pending then
+                return
+            end
+            local tree_resized, panes_resized = false, false
+            for _, win in ipairs(vim.v.event.windows or {}) do
+                if win == state.tree_win then
+                    tree_resized = true
+                elseif win == state.left_win or win == state.right_win then
+                    panes_resized = true
+                end
+            end
+            if tree_resized then
+                apply_ratio()
+            elseif panes_resized then
+                local l, r = widths()
+                local set = state.pane_widths
+                if not (set and set[1] == l and set[2] == r) then
+                    -- Dragged by the user: the new split sets the ratio.
+                    state.pane_ratio = l / (l + r)
+                    remember_widths()
+                end
+            end
+        end,
+    })
+    vim.api.nvim_create_autocmd("WinScrolled", {
+        group = group,
+        callback = function()
+            if not valid() then
+                return true
+            end
+            local scrolled = vim.v.event
+            local left_scrolled = scrolled[tostring(state.left_win)] ~= nil
+            local right_scrolled = scrolled[tostring(state.right_win)] ~= nil
+            if not (left_scrolled or right_scrolled) then
+                return
+            end
+            local source = left_scrolled and state.left_win or state.right_win
+            if left_scrolled and right_scrolled then
+                -- Both moved: the current pane leads.
+                local current = vim.api.nvim_get_current_win()
+                source = current == state.right_win and state.right_win or state.left_win
+            end
+            local target = source == state.left_win and state.right_win or state.left_win
+            local top = vim.fn.getwininfo(source)[1].topline
+            if vim.fn.getwininfo(target)[1].topline == top then
+                return
+            end
+            vim.api.nvim_win_call(target, function()
+                -- Keep the cursor inside the new view, or Neovim scrolls back to it.
+                local height, scrolloff = vim.api.nvim_win_get_height(0), vim.wo.scrolloff
+                local line = math.min(math.max(vim.fn.line("."), top + scrolloff), top + height - 1 - scrolloff)
+                vim.fn.winrestview({ topline = top, lnum = math.max(line, top) })
+            end)
+        end,
+    })
+end
+
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
 function M.open(revset)
@@ -220,6 +351,8 @@ function M.open(revset)
     end
     -- The pane focused when the view opens counts as used.
     track_pane()
+
+    setup_pane_sync(state)
 end
 
 --- Close the diff view.
@@ -230,6 +363,7 @@ function M.close()
     -- Drop the view's autocmds now rather than when their events next fire.
     pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
     pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSide")
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSync")
 
     -- Reset state first
     M.state = {

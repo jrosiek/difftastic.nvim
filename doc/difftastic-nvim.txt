@@ -18,7 +18,8 @@ difftastic-nvim displays difftastic diffs in a side-by-side view with syntax
 highlighting, a file tree sidebar, and synchronized scrolling.
 
 Features:
-- Side-by-side diff view with synchronized scrolling
+- Side-by-side diff view with synchronized scrolling (mouse wheel included);
+  the panes keep their split when Neovim is resized
 - Hierarchical file tree with directory collapsing
 - Syntax highlighting for the source language
 - Filler lines to indicate alignment gaps
