@@ -526,8 +526,13 @@ function M.open(state)
     end
     vim.keymap.set("n", keys.select, select, { buffer = state.tree_buf })
     -- The first click of a double click has already put the cursor on the row. A
-    -- double click elsewhere, such as on a window separator, keeps its default.
+    -- double click on the split between the diff panes gives them the same width;
+    -- one elsewhere, such as on another window separator, keeps its default.
     vim.keymap.set("n", "<2-LeftMouse>", function()
+        if difft.mouse_on_pane_split() then
+            vim.schedule(difft.equalize_panes)
+            return ""
+        end
         local mouse = vim.fn.getmousepos()
         if mouse.winid ~= state.tree_win or mouse.line == 0 then
             return "<2-LeftMouse>"

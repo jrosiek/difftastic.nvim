@@ -899,3 +899,134 @@ describe("double click in the tree", function()
         assert.are.equal("tree", shown[2])
     end)
 end)
+
+describe("double click on the split between the diff panes", function()
+    local nvim
+
+    before_each(function()
+        nvim = child_nvim()
+        -- Start from an uneven split.
+        nvim.remote([[
+            local s = require("difftastic-nvim").state
+            local total = vim.api.nvim_win_get_width(s.left_win) + vim.api.nvim_win_get_width(s.right_win)
+            vim.api.nvim_win_set_width(s.left_win, math.floor(total / 4))
+        ]])
+        nvim.settle()
+    end)
+
+    after_each(function()
+        nvim.stop()
+    end)
+
+    local function widths()
+        return nvim.remote([[
+            local s = require("difftastic-nvim").state
+            return {
+                tree = vim.api.nvim_win_get_width(s.tree_win),
+                left = vim.api.nvim_win_get_width(s.left_win),
+                right = vim.api.nvim_win_get_width(s.right_win),
+            }
+        ]])
+    end
+
+    local function focus(name)
+        nvim.remote("vim.api.nvim_set_current_win(require('difftastic-nvim').state[...])", name)
+        nvim.settle()
+    end
+
+    --- Double clicks at a screen cell, given relative to a window of the view:
+    --- `col` counts from the window's first column, so its width is the separator
+    --- to its right.
+    local function double_click(win_name, row, col)
+        nvim.remote(
+            [[
+            local name, row, col = ...
+            local win = require("difftastic-nvim").state[name]
+            local pos = vim.api.nvim_win_get_position(win)
+            if col == "split" then
+                col = vim.api.nvim_win_get_width(win)
+            end
+            for _ = 1, 2 do
+                vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + row, pos[2] + col)
+                vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + row, pos[2] + col)
+            end
+        ]],
+            win_name,
+            row,
+            col
+        )
+        nvim.settle()
+    end
+
+    local function assert_even(w, before)
+        assert.are.equal(before.tree, w.tree)
+        assert.are.equal(before.left + before.right, w.left + w.right)
+        assert.is_true(math.abs(w.left - w.right) <= 1, vim.inspect(w))
+    end
+
+    for _, current in ipairs({ "left_win", "right_win", "tree_win" }) do
+        it("gives both panes the same width with " .. current .. " focused", function()
+            focus(current)
+            local before = widths()
+            assert.is_true(before.right - before.left > 10, "split did not start uneven")
+
+            double_click("left_win", 5, "split")
+
+            assert_even(widths(), before)
+            assert.are.equal("n", nvim.remote("return vim.api.nvim_get_mode().mode"))
+        end)
+    end
+
+    it("keeps the even split when Neovim is resized", function()
+        focus("left_win")
+        local before = widths()
+        double_click("left_win", 5, "split")
+
+        nvim.remote("vim.o.columns = 260")
+        nvim.settle()
+
+        assert_even(widths(), { tree = before.tree, left = before.left + 30, right = before.right + 30 })
+    end)
+
+    it("restores an exact half that survives many resizes", function()
+        -- An odd number of columns for the panes, where whole widths cannot be a half.
+        nvim.remote("vim.o.columns = 201")
+        nvim.settle()
+        focus("left_win")
+        double_click("left_win", 5, "split")
+        nvim.remote("vim.o.columns = 200")
+        nvim.settle()
+        local even = widths()
+
+        for _ = 1, 3 do
+            for _, columns in ipairs({ 157, 211, 133, 199, 171, 240, 183, 200 }) do
+                nvim.remote("vim.o.columns = ...", columns)
+                nvim.settle()
+                local w = widths()
+                assert.is_true(math.abs(w.left - w.right) <= 1, columns .. ": " .. vim.inspect(w))
+            end
+        end
+
+        assert.are.same(even, widths())
+    end)
+
+    it("leaves the split alone on a double click in a pane", function()
+        focus("right_win")
+        local before = widths()
+
+        double_click("right_win", 5, 2)
+
+        assert.are.same(before, widths())
+        -- The default double click selects the word under the mouse.
+        assert.are.equal("v", nvim.remote("return vim.api.nvim_get_mode().mode"))
+    end)
+
+    it("leaves the split alone on a double click on the tree separator", function()
+        focus("left_win")
+        local before = widths()
+
+        double_click("tree_win", 5, "split")
+
+        assert.are.same(before, widths())
+    end)
+end)

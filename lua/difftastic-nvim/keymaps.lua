@@ -33,6 +33,15 @@ local function setup_diff_keymaps(buf, state)
             end
         end, { buffer = buf })
     end
+    -- A double click on the split between the panes gives them the same width;
+    -- any other double click keeps its default.
+    vim.keymap.set("n", "<2-LeftMouse>", function()
+        if not difft.mouse_on_pane_split() then
+            return "<2-LeftMouse>"
+        end
+        vim.schedule(difft.equalize_panes)
+        return ""
+    end, { buffer = buf, expr = true })
 end
 
 --- Set up keymaps for tree buffer.

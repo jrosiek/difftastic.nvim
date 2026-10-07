@@ -451,6 +451,31 @@ function M.focus_diff()
     end
 end
 
+--- Give the two diff panes the same width, leaving the tree alone.
+function M.equalize_panes()
+    local left, right = M.state.left_win, M.state.right_win
+    if not (left and right and vim.api.nvim_win_is_valid(left) and vim.api.nvim_win_is_valid(right)) then
+        return
+    end
+    local total = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
+    -- An exact half, kept for later resizes (see setup_pane_sync).
+    M.state.pane_ratio = 0.5
+    vim.api.nvim_win_set_width(left, math.floor(total / 2))
+    M.state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
+end
+
+--- Whether the last mouse event was on the separator between the two diff panes.
+--- The separator belongs to the window on its left, one column past its width.
+--- @return boolean
+function M.mouse_on_pane_split()
+    local left = M.state.left_win
+    if not (left and vim.api.nvim_win_is_valid(left)) then
+        return false
+    end
+    local mouse = vim.fn.getmousepos()
+    return mouse.winid == left and mouse.line == 0 and mouse.wincol == vim.api.nvim_win_get_width(left) + 1
+end
+
 --- Show a specific file by index. A file shown before gets its cursor position
 --- back; otherwise the cursor goes to the first hunk (with scroll_to_first_hunk)
 --- or the top.
