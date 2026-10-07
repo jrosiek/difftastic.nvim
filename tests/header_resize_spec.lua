@@ -147,6 +147,85 @@ describe("header resize", function()
         assert.are.same({ width, width, width, width }, header_widths())
     end)
 
+    it("keeps long tree rows on one line in a narrow panel", function()
+        vim.go.wrap = true
+        binary.get = function()
+            return {
+                run_diff = function()
+                    return { files = { file_record(string.rep("long_directory_name/", 4) .. "file.txt") } }
+                end,
+            }
+        end
+        difft.open("HEAD")
+        resize(30)
+
+        local win = difft.state.tree_win
+        assert.is_false(vim.wo[win].wrap)
+        -- Every buffer line takes exactly one screen row.
+        local rows = vim.api.nvim_win_text_height(win, {}).all
+        assert.are.equal(vim.api.nvim_buf_line_count(difft.state.tree_buf), rows)
+    end)
+
+    describe("with rows wider than the panel", function()
+        local long = string.rep("long_directory_name/", 4) .. "file.txt"
+
+        before_each(function()
+            binary.get = function()
+                return {
+                    run_diff = function()
+                        return { files = { file_record("a.txt"), file_record(long) } }
+                    end,
+                }
+            end
+        end)
+
+        local function tree_rows()
+            return vim.list_slice(lines(), tree.header_lines + 1)
+        end
+
+        it("ends a row that does not fit with an ellipsis", function()
+            difft.open("HEAD")
+            resize(30)
+
+            local cut = 0
+            for _, row in ipairs(tree_rows()) do
+                assert.is_true(vim.fn.strdisplaywidth(row) <= 30, row)
+                if row:sub(-#"…") == "…" then
+                    cut = cut + 1
+                    assert.are.equal(30, vim.fn.strdisplaywidth(row), row)
+                end
+            end
+            assert.is_true(cut > 0, "no row was cut")
+        end)
+
+        it("shows the whole row again when the panel widens", function()
+            difft.open("HEAD")
+            resize(30)
+            resize(120)
+
+            local found = false
+            for _, row in ipairs(tree_rows()) do
+                assert.are_not.equal("…", row:sub(-#"…"), row)
+                found = found or row:find("file.txt", 1, true) ~= nil
+            end
+            assert.is_true(found)
+        end)
+
+        it("keeps the tree cursor and the current-file highlight across a resize", function()
+            difft.open("HEAD")
+            local win = difft.state.tree_win
+            local count = vim.api.nvim_buf_line_count(difft.state.tree_buf)
+            vim.api.nvim_win_set_cursor(win, { count, 0 })
+
+            resize(30)
+
+            assert.are.equal(count, vim.api.nvim_win_get_cursor(win)[1])
+            local ns = vim.api.nvim_create_namespace("difft-tree-current")
+            local marks = vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, ns, 0, -1, {})
+            assert.are.equal(1, #marks)
+        end)
+    end)
+
     it("ignores resizes that leave the panel width unchanged", function()
         difft.open("HEAD")
         local before = lines()

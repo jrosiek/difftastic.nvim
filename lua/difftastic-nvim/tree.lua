@@ -23,6 +23,9 @@ local GLYPHS = {
 M.tree = nil
 --- @type number|nil
 M.current_file_idx = nil
+--- Display width tree rows are cut to; nil leaves them whole.
+--- @type number|nil
+M.row_width = nil
 --- @type number
 M.total_additions = 0
 --- @type number
@@ -268,6 +271,34 @@ local function convert_to_nui_nodes(node)
     return nui_children
 end
 
+--- Cut a tree row to `width` display columns, ending it with "…" when it does not
+--- fit. Highlights of the kept segments are preserved.
+--- @param line table NuiLine
+--- @param width number|nil
+--- @return table NuiLine
+local function fit_row(line, width)
+    if not width or line:width() <= width then
+        return line
+    end
+    local fitted = NuiLine()
+    local used = 0
+    for _, text in ipairs(line._texts) do
+        if used + text:width() < width then
+            fitted:append(text:content(), text.extmark)
+            used = used + text:width()
+        else
+            local room = width - used
+            local cut = vim.fn.strcharpart(text:content(), 0, room)
+            while cut ~= "" and display_width(cut .. "…") > room do
+                cut = vim.fn.strcharpart(cut, 0, vim.fn.strchars(cut) - 1)
+            end
+            fitted:append(cut .. "…", text.extmark)
+            break
+        end
+    end
+    return fitted
+end
+
 local function prepare_node(node)
     local cfg = get_config()
     local line = NuiLine()
@@ -308,7 +339,7 @@ local function prepare_node(node)
 
     append_stat_chip(line, node.additions, node.deletions)
 
-    return line
+    return fit_row(line, M.row_width)
 end
 
 --- Width available for text in a window: its width minus the columns drawn left
@@ -416,6 +447,8 @@ function M.open(state)
     vim.wo[state.tree_win].scrollbind = false
     vim.wo[state.tree_win].cursorbind = false
     vim.wo[state.tree_win].list = false
+    -- A long row is cut off at the panel edge rather than wrapped onto a second line.
+    vim.wo[state.tree_win].wrap = false
     vim.wo[state.tree_win].winhl = table.concat({
         "Normal:DifftTreeNormal",
         "NormalNC:DifftTreeNormal",
@@ -452,9 +485,10 @@ function M.open(state)
         prepare_node = prepare_node,
     })
 
+    M.row_width = M.text_width(state.tree_win)
     M.tree:render(M.header_lines + 1)
 
-    -- Redraw the header box when the tree window changes width.
+    -- Redraw the header box and the rows when the tree window changes width.
     vim.api.nvim_create_autocmd("WinResized", {
         group = vim.api.nvim_create_augroup("DifftTreeResize", { clear = true }),
         callback = function()
@@ -463,6 +497,7 @@ function M.open(state)
             end
             if M.text_width(state.tree_win) ~= M.header_width then
                 M.refresh_header(state)
+                M.refresh_rows(state)
             end
         end,
     })
@@ -522,6 +557,20 @@ function M.refresh_header(state)
     buf.modifiable, buf.readonly = true, false
     render_header(state, M.total_additions or 0, M.total_deletions or 0, M.header_lines)
     buf.modifiable, buf.readonly = modifiable, readonly
+end
+
+--- Redraw the tree rows at the tree window's current width, keeping the cursor
+--- and the current-file highlight.
+--- @param state table Plugin state
+function M.refresh_rows(state)
+    if not (M.tree and state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
+        return
+    end
+    M.row_width = M.text_width(state.tree_win)
+    local cursor = vim.api.nvim_win_get_cursor(state.tree_win)
+    M.tree:render()
+    M.highlight_current(state)
+    vim.api.nvim_win_set_cursor(state.tree_win, cursor)
 end
 
 local function collect_visible_files(tree)
