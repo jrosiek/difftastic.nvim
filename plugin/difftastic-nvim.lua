@@ -10,9 +10,9 @@ if vim.fn.isdirectory(doc_dir) == 1 and vim.fn.filereadable(doc_dir .. "/tags") 
     pcall(vim.cmd.helptags, doc_dir)
 end
 
-local open_difft = vim.schedule_wrap(function(revset)
-    require("difftastic-nvim").open(revset)
-end)
+local function open_difft(revset)
+    require("difftastic-nvim").open_when_ready(revset)
+end
 
 vim.api.nvim_create_user_command("Difft", function(opts)
     local args = opts.args

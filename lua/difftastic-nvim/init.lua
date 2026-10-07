@@ -360,6 +360,89 @@ local function setup_pane_sync(state)
     })
 end
 
+--- How long the screen size must stay unchanged after startup before a diff opened
+--- during startup is shown, and the longest wait (milliseconds).
+M.startup_settle_ms = 150
+M.startup_settle_max_ms = 1000
+
+--- Open a diff view, as `open()`, on the next main loop iteration (as the
+--- :Difft command always did). When called while Neovim starts up (for example
+--- `nvim -c 'Difft'`), only once startup has finished and the screen size has
+--- settled: a GUI may resize the grid right after startup (Neovide applies its
+--- scale factor then), and since computing the diff blocks Neovim, a resize
+--- arriving meanwhile would leave the view laid out for the old size.
+--- @param revset string|nil As for open()
+function M.open_when_ready(revset)
+    if vim.v.vim_did_enter == 1 then
+        vim.schedule(function()
+            M.open(revset)
+        end)
+        return
+    end
+    vim.api.nvim_create_autocmd("VimEnter", {
+        once = true,
+        callback = function()
+            local start = vim.uv.now()
+            local last_resize = start
+            local group = vim.api.nvim_create_augroup("DifftStartupSettle", { clear = true })
+            vim.api.nvim_create_autocmd("VimResized", {
+                group = group,
+                callback = function()
+                    last_resize = vim.uv.now()
+                end,
+            })
+            local timer, done = vim.uv.new_timer(), false
+            timer:start(25, 25, vim.schedule_wrap(function()
+                local now = vim.uv.now()
+                if done or (now - last_resize < M.startup_settle_ms and now - start < M.startup_settle_max_ms) then
+                    return
+                end
+                done = true
+                timer:stop()
+                timer:close()
+                pcall(vim.api.nvim_del_augroup_by_id, group)
+                M.open(revset)
+            end))
+        end,
+    })
+end
+
+--- Show a centred loading window over the current tab, styled like the side
+--- panel's header box: "Loading…" in the top border and the range row below it.
+--- @param kind string Range kind ("Base/Head", "Revset")
+--- @param label string|nil Range label
+--- @return number window
+local function show_loading(kind, label)
+    label = label or ""
+    local row = " " .. kind .. "  " .. label .. " "
+    local width = math.min(vim.fn.strdisplaywidth(row), math.max(1, vim.o.columns - 4))
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { row })
+    local ns = vim.api.nvim_create_namespace("difft-loading")
+    vim.api.nvim_buf_set_extmark(buf, ns, 0, 1, { end_col = 1 + #kind, hl_group = "DifftTreeMuted" })
+    if label ~= "" then
+        local start = 1 + #kind + 2
+        vim.api.nvim_buf_set_extmark(buf, ns, 0, start, { end_col = start + #label, hl_group = "DifftTreeRange" })
+    end
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].modifiable = false
+    local win = vim.api.nvim_open_win(buf, false, {
+        relative = "editor",
+        width = width,
+        height = 1,
+        row = math.max(0, math.floor((vim.o.lines - 3) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+        style = "minimal",
+        border = "rounded",
+        title = { { " Loading… ", "DifftTreeTitle" } },
+        title_pos = "center",
+        focusable = false,
+        noautocmd = true,
+    })
+    vim.wo[win].winhl = "NormalFloat:DifftTreeNormal,FloatBorder:DifftTreeDivider,FloatTitle:DifftTreeTitle"
+    return win
+end
+
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
 function M.open(revset)
@@ -367,15 +450,39 @@ function M.open(revset)
         M.close()
     end
 
-    local result
-    if revset == nil then
-        result = binary.get().run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
-    elseif revset == "--staged" then
-        result = binary.get().run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
-    else
-        result = binary.get().run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+    -- Computing a large diff blocks Neovim, so show the new tab with a loading
+    -- message first.
+    local original_tabpage = vim.api.nvim_get_current_tabpage()
+    vim.cmd("tabnew")
+    local diff_tabpage = vim.api.nvim_get_current_tabpage()
+    -- Let Neovim handle input still queued, such as a terminal resize reported while
+    -- it started up, so the message is centred on the current screen size.
+    vim.wait(0)
+    local loading_win = show_loading(range_context(revset, M.config.vcs))
+    vim.cmd("redraw")
+
+    local ok, result = pcall(function()
+        if revset == nil then
+            return binary.get().run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
+        elseif revset == "--staged" then
+            return binary.get().run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
+        end
+        return binary.get().run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+    end)
+    if vim.api.nvim_win_is_valid(loading_win) then
+        vim.api.nvim_win_close(loading_win, true)
     end
-    if not result.files or #result.files == 0 then
+    if not ok or not result.files or #result.files == 0 then
+        -- Nothing to show: leave the loading tab.
+        if vim.api.nvim_tabpage_is_valid(original_tabpage) then
+            vim.api.nvim_set_current_tabpage(original_tabpage)
+        end
+        if vim.api.nvim_tabpage_is_valid(diff_tabpage) then
+            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(diff_tabpage))
+        end
+        if not ok then
+            error(result, 0)
+        end
         vim.notify("No changes found", vim.log.levels.INFO)
         return
     end
@@ -393,10 +500,8 @@ function M.open(revset)
     M.state.reviewed = {}
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
-    -- Store original tabpage and create new one for diff view
-    M.state.original_tabpage = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tabnew")
-    M.state.diff_tabpage = vim.api.nvim_get_current_tabpage()
+    M.state.original_tabpage = original_tabpage
+    M.state.diff_tabpage = diff_tabpage
 
     tree.open(M.state)
     diff.open(M.state)
