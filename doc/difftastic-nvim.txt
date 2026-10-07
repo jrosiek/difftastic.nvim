@@ -140,7 +140,8 @@ Default keybindings:
     [f          Previous file
     ]c          Next hunk (see |difftastic-nvim-hunk-wrap-file|)
     [c          Previous hunk (see |difftastic-nvim-hunk-wrap-file|)
-    <Tab>       Toggle focus between file tree and diff panes
+    <Tab>       Toggle focus between file tree and diff panes (from the
+                tree, back to the diff pane used last)
     <CR>        Select file or toggle directory (in tree)
     q           Close diff view
 

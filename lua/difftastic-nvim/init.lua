@@ -57,6 +57,7 @@ M.state = {
     right_buf = nil,
     original_tabpage = nil,
     diff_tabpage = nil,
+    pane_side = nil,
 }
 
 local function git_range_label(revset)
@@ -168,10 +169,30 @@ function M.open(revset)
     diff.open(M.state)
     keymaps.setup(M.state)
 
+    -- Remember the diff pane used last, so focus can return to it from the tree.
+    local state = M.state
+    local function track_pane()
+        if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+            return true -- diff view closed: drop this autocmd
+        end
+        local win = vim.api.nvim_get_current_win()
+        if win == state.left_win then
+            state.pane_side = "base"
+        elseif win == state.right_win then
+            state.pane_side = "head"
+        end
+    end
+    vim.api.nvim_create_autocmd("WinEnter", {
+        group = vim.api.nvim_create_augroup("DifftPaneSide", { clear = true }),
+        callback = track_pane,
+    })
+
     local first_idx = tree.first_file_in_display_order()
     if first_idx then
         M.show_file(first_idx)
     end
+    -- The pane focused when the view opens counts as used.
+    track_pane()
 end
 
 --- Close the diff view.
@@ -181,6 +202,7 @@ function M.close()
 
     -- Drop the view's autocmds now rather than when their events next fire.
     pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
+    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSide")
 
     -- Reset state first
     M.state = {
@@ -196,6 +218,7 @@ function M.close()
         right_buf = nil,
         original_tabpage = nil,
         diff_tabpage = nil,
+        pane_side = nil,
     }
 
     -- Switch to original tabpage if valid
