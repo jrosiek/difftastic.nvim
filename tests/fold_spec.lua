@@ -481,6 +481,267 @@ describe("folds in the diff view", function()
         end)
     end)
 
+    describe("when returning to a file", function()
+        local function set_fold(win, line, open)
+            vim.api.nvim_win_call(win, function()
+                vim.cmd(("%dfold%s"):format(line, open and "open" or "close"))
+            end)
+        end
+
+        it("restores the folds opened and closed in it", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 30, true)
+            set_fold(difft.state.right_win, 30, true)
+            set_fold(difft.state.left_win, 50, true)
+            set_fold(difft.state.right_win, 50, true)
+            set_fold(difft.state.left_win, 50, false)
+            set_fold(difft.state.right_win, 50, false)
+
+            show("b.txt")
+            assert.are.same({ { 1, 15, true } }, folds(difft.state.left_win))
+            show("a.txt")
+
+            local expected = { { 1, 17, true }, { 25, 38, false }, { 47, 53, true } }
+            assert.are.same(expected, folds(difft.state.left_win))
+            assert.are.same(expected, folds(difft.state.right_win))
+        end)
+
+        it("includes a change made in one pane just before leaving", function()
+            difft.open("HEAD")
+            show("a.txt")
+            -- Not synced yet: only the head pane has the fold open.
+            set_fold(difft.state.right_win, 1, true)
+
+            show("b.txt")
+            show("a.txt")
+
+            local expected = { { 1, 17, false }, { 25, 38, true }, { 47, 53, true } }
+            assert.are.same(expected, folds(difft.state.left_win))
+            assert.are.same(expected, folds(difft.state.right_win))
+        end)
+
+        it("remembers closed folds with fold_by_default = false", function()
+            difft.config.fold_by_default = false
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 50, false)
+            set_fold(difft.state.right_win, 50, false)
+
+            show("b.txt")
+            assert.are.same({ { 1, 15, false } }, folds(difft.state.left_win))
+            show("a.txt")
+
+            local expected = { { 1, 17, false }, { 25, 38, false }, { 47, 53, true } }
+            assert.are.same(expected, folds(difft.state.left_win))
+            assert.are.same(expected, folds(difft.state.right_win))
+        end)
+
+        it("keeps each file's fold states apart", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 1, true)
+            set_fold(difft.state.right_win, 1, true)
+            show("b.txt")
+            set_fold(difft.state.left_win, 1, true)
+            set_fold(difft.state.right_win, 1, true)
+
+            show("a.txt")
+            assert.are.same({ { 1, 17, false }, { 25, 38, true }, { 47, 53, true } }, folds(difft.state.right_win))
+            show("b.txt")
+            assert.are.same({ { 1, 15, false } }, folds(difft.state.right_win))
+        end)
+
+        it("restores the cursor inside an opened fold", function()
+            difft.open("HEAD")
+            show("a.txt")
+            vim.api.nvim_set_current_win(difft.state.right_win)
+            set_fold(difft.state.left_win, 30, true)
+            set_fold(difft.state.right_win, 30, true)
+            vim.api.nvim_win_set_cursor(difft.state.right_win, { 32, 0 })
+
+            show("b.txt")
+            show("a.txt")
+
+            assert.are.same({ 32, 0 }, vim.api.nvim_win_get_cursor(difft.state.right_win))
+            assert.are.equal(-1, vim.fn.foldclosed(32))
+        end)
+
+        it("uses fold_by_default when the folds changed meanwhile", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 30, true)
+            set_fold(difft.state.right_win, 30, true)
+            show("b.txt")
+
+            difft.config.context_size = 5
+            show("a.txt")
+
+            local expected = { { 1, 15, true }, { 27, 36, true }, { 49, 53, true } }
+            assert.are.same(expected, folds(difft.state.left_win))
+            assert.are.same(expected, folds(difft.state.right_win))
+        end)
+
+        it("records a file's fold states as soon as it is shown", function()
+            -- a.txt is shown when the view opens; no file is left before checking.
+            difft.open("HEAD")
+            assert.are.equal("a.txt", difft.state.shown_path)
+
+            local saved = difft.state.fold_states["a.txt"]
+            assert.are.same({ { 1, 17 }, { 25, 38 }, { 47, 53 } }, saved.ranges)
+            assert.are.same({ true, true, true }, saved.closed)
+        end)
+
+        it("records every fold change without leaving the file", function()
+            difft.open("HEAD")
+            show("a.txt")
+
+            set_fold(difft.state.right_win, 30, true)
+            fold.sync(difft.state)
+            assert.are.same({ true, false, true }, difft.state.fold_states["a.txt"].closed)
+
+            set_fold(difft.state.left_win, 1, true)
+            fold.sync(difft.state)
+            assert.are.same({ false, false, true }, difft.state.fold_states["a.txt"].closed)
+        end)
+
+        it("settles a pending fold change when the view closes", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.right_win, 30, true)
+            local original_sync, seen = fold.sync, nil
+            fold.sync = function(state)
+                original_sync(state)
+                seen = seen or vim.deepcopy(state.fold_states["a.txt"])
+            end
+
+            local ok, err = pcall(difft.close)
+            fold.sync = original_sync
+
+            assert.is_true(ok, err)
+            assert.are.same({ true, false, true }, seen.closed)
+        end)
+
+        it("records nothing for a file shown without folds", function()
+            difft.config.context_size = 0
+            difft.open("HEAD")
+            show("a.txt")
+
+            assert.is_nil(difft.state.fold_states["a.txt"])
+        end)
+
+        describe("whose folds changed meanwhile", function()
+            local function visit_at(line, side)
+                local win = side == "base" and difft.state.left_win or difft.state.right_win
+                vim.api.nvim_set_current_win(win)
+                vim.api.nvim_win_set_cursor(win, { line, 0 })
+                vim.api.nvim_exec_autocmds("CursorMoved", {})
+            end
+
+            it("opens the fold that now hides the remembered line", function()
+                difft.open("HEAD")
+                show("a.txt")
+                set_fold(difft.state.left_win, 30, true)
+                set_fold(difft.state.right_win, 30, true)
+                visit_at(30, "head")
+                show("b.txt")
+
+                difft.config.context_size = 1
+                show("a.txt")
+
+                local expected = { { 1, 19, true }, { 23, 40, false }, { 45, 53, true } }
+                assert.are.same(expected, folds(difft.state.left_win))
+                assert.are.same(expected, folds(difft.state.right_win))
+                assert.are.same({ true, false, true }, difft.state.fold_states["a.txt"].closed)
+                assert.are.same({ 30, 0 }, vim.api.nvim_win_get_cursor(difft.state.right_win))
+                assert.are.equal(-1, vim.fn.foldclosed(30))
+            end)
+
+            it("leaves the folds closed when the remembered line stays visible", function()
+                difft.open("HEAD")
+                show("a.txt")
+                visit_at(20, "base")
+                show("b.txt")
+
+                difft.config.context_size = 1
+                show("a.txt")
+
+                local expected = { { 1, 19, true }, { 23, 40, true }, { 45, 53, true } }
+                assert.are.same(expected, folds(difft.state.left_win))
+                assert.are.same(expected, folds(difft.state.right_win))
+            end)
+
+            it("opens the fold when folding was off on the last visit", function()
+                difft.config.context_size = 0
+                difft.open("HEAD")
+                show("a.txt")
+                visit_at(5, "head")
+                show("b.txt")
+
+                difft.config.context_size = 3
+                show("a.txt")
+
+                local expected = { { 1, 17, false }, { 25, 38, true }, { 47, 53, true } }
+                assert.are.same(expected, folds(difft.state.left_win))
+                assert.are.same(expected, folds(difft.state.right_win))
+            end)
+
+            it("needs no fold to open when folding is now off", function()
+                difft.open("HEAD")
+                show("a.txt")
+                visit_at(30, "head")
+                show("b.txt")
+
+                difft.config.context_size = 0
+                show("a.txt")
+
+                assert.are.same({}, folds(difft.state.left_win))
+                assert.are.same({ 30, 0 }, vim.api.nvim_win_get_cursor(difft.state.right_win))
+            end)
+        end)
+
+        it("keeps a fold the user closed over the remembered line closed", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 30, true)
+            set_fold(difft.state.right_win, 30, true)
+            vim.api.nvim_set_current_win(difft.state.right_win)
+            vim.api.nvim_win_set_cursor(difft.state.right_win, { 30, 0 })
+            vim.api.nvim_exec_autocmds("CursorMoved", {})
+            set_fold(difft.state.left_win, 30, false)
+            set_fold(difft.state.right_win, 30, false)
+            show("b.txt")
+
+            show("a.txt")
+
+            assert.are.same({ { 1, 17, true }, { 25, 38, true }, { 47, 53, true } }, folds(difft.state.right_win))
+        end)
+
+        it("keeps the first fold closed for a new file without scroll_to_first_hunk", function()
+            difft.config.scroll_to_first_hunk = false
+            difft.open("HEAD")
+            show("a.txt")
+
+            assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(difft.state.right_win))
+            assert.are.same({ { 1, 17, true }, { 25, 38, true }, { 47, 53, true } }, folds(difft.state.right_win))
+        end)
+
+        it("forgets fold states when a new view opens", function()
+            difft.open("HEAD")
+            show("a.txt")
+            set_fold(difft.state.left_win, 30, true)
+            set_fold(difft.state.right_win, 30, true)
+            show("b.txt")
+            difft.close()
+
+            difft.open("HEAD")
+            show("b.txt")
+            show("a.txt")
+
+            assert.are.same({ { 1, 17, true }, { 25, 38, true }, { 47, 53, true } }, folds(difft.state.left_win))
+        end)
+    end)
+
     it("lands on unfolded lines when navigating hunks", function()
         difft.config.hunk_wrap_file = false
         difft.open("HEAD")

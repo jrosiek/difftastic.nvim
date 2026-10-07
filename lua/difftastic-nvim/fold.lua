@@ -158,6 +158,14 @@ local function snapshot(win, ranges)
     end)
 end
 
+--- Record the shown file's fold states, so they are current at any time.
+--- @param state table Plugin state
+local function store(state)
+    if state.shown_path and state.fold_states then
+        state.fold_states[state.shown_path] = state.fold_closed and { ranges = state.fold_ranges, closed = state.fold_closed } or nil
+    end
+end
+
 --- Open or close the folds `indices` of a window to match `closed`.
 local function set_closed(win, ranges, indices, closed)
     if #indices == 0 then
@@ -287,6 +295,7 @@ function M.sync(state)
         repair(state, right, ranges, wanted)
     end
     state.fold_closed = wanted
+    store(state)
 
     local left_touched = not left_ok or #changed_left > 0
     local right_touched = not right_ok or #changed_right > 0
@@ -308,12 +317,36 @@ function M.sync(state)
     end
 end
 
+--- Open, in both panes, the closed fold over `line` of the shown file, if any.
+--- @param state table Plugin state
+--- @param line number
+function M.reveal(state, line)
+    for i, range in ipairs(state.fold_ranges or {}) do
+        if line >= range[1] and line <= range[2] and state.fold_closed and state.fold_closed[i] then
+            for _, win in ipairs({ state.left_win, state.right_win }) do
+                if win and vim.api.nvim_win_is_valid(win) then
+                    vim.api.nvim_win_call(win, function()
+                        pcall(vim.cmd, ("%d,%dfoldopen"):format(range[1], range[2]))
+                    end)
+                end
+            end
+            state.fold_closed = vim.deepcopy(state.fold_closed)
+            state.fold_closed[i] = false
+            store(state)
+            return
+        end
+    end
+end
+
 --- Fold the unchanged lines of the rendered file in both panes, following the
 --- context_size, min_fold_size and fold_by_default settings. With context_size 0
 --- the panes are left without plugin folds.
 --- @param state table Plugin state
 --- @param file table File data with rows and hunk_starts
-function M.render(state, file)
+--- @param saved table|nil The file's recorded fold states (state.fold_states);
+---   used when the folds are still the same, else fold_by_default applies
+--- @return boolean restored True when the recorded states were used
+function M.render(state, file, saved)
     local config = require("difftastic-nvim").config
     local wins = {}
     for _, win in ipairs({ state.left_win, state.right_win }) do
@@ -328,17 +361,24 @@ function M.render(state, file)
         for _, win in ipairs(wins) do
             restore(state, win)
         end
-        return
+        store(state)
+        return false
     end
 
     local ranges = M.ranges(file.rows, file.hunk_starts, config.context_size, config.min_fold_size)
     state.fold_ranges = ranges
+    local closed, restored = config.fold_by_default, false
+    if saved and vim.deep_equal(saved.ranges, ranges) then
+        closed, restored = saved.closed, true
+    end
     for _, win in ipairs(wins) do
-        apply(state, win, ranges, config.fold_by_default)
+        apply(state, win, ranges, closed)
     end
     if wins[1] then
         state.fold_closed = snapshot(wins[1], ranges)
     end
+    store(state)
+    return restored
 end
 
 return M

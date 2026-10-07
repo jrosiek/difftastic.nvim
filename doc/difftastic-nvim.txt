@@ -297,6 +297,11 @@ min_fold_size ~
 
 fold_by_default ~
     When enabled, the folds start closed; otherwise they are created open.
+    This applies to a file shown for the first time: a file shown again in
+    the same diff view gets back the folds it was left with. If its folds
+    changed meanwhile (|difftastic-nvim-folding| settings), they start from
+    this default, and a fold that would hide the remembered cursor line is
+    opened.
     A closed fold is a band across the pane with the number of lines it
     hides centred in a rule: "━━━━ ▸ 42 unchanged lines ━━━━". The diff
     panes draw it with DifftFold instead of the theme's |hl-Folded|.

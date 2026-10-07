@@ -77,6 +77,7 @@ M.state = {
     shown_path = nil,
     fold_ranges = {},
     fold_closed = nil,
+    fold_states = {},
     saved_fold_options = {},
 }
 
@@ -359,6 +360,7 @@ function M.open(revset)
     M.state.shown_path = nil
     M.state.pane_side = nil
     M.state.fold_ranges = {}
+    M.state.fold_states = {}
     M.state.saved_fold_options = {}
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
@@ -422,6 +424,8 @@ end
 function M.close()
     local diff_tabpage = M.state.diff_tabpage
     local original_tabpage = M.state.original_tabpage
+    -- Settle the state before it is dropped: a fold change still in one pane.
+    fold.sync(M.state)
 
     -- Drop the view's autocmds now rather than when their events next fire.
     pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
@@ -447,6 +451,7 @@ function M.close()
         shown_path = nil,
         fold_ranges = {},
         fold_closed = nil,
+        fold_states = {},
         saved_fold_options = {},
     }
 
@@ -567,18 +572,24 @@ function M.show_file(idx)
     if idx < 1 or idx > #M.state.files then
         return
     end
+    -- Settle the file being left: a fold change still in one pane, the cursor.
+    fold.sync(M.state)
     record_position()
     M.state.current_file_idx = idx
     local file = M.state.files[idx]
     diff.render(M.state, file)
-    fold.render(M.state, file)
     M.state.shown_path = file.path
+    local folds_restored = fold.render(M.state, file, M.state.fold_states[file.path])
     local pos = M.state.positions[file.path]
     if not pos then
         -- A file not shown before opens at its first hunk (or its top) in the pane
         -- in use, which is also where <Tab> from the tree goes.
         local first = M.config.scroll_to_first_hunk and diff.hunk_positions[1] or 1
         pos = { line = first, col = 0, side = M.state.pane_side or "head" }
+    elseif not folds_restored then
+        -- The folds were rebuilt with their default states (their layout changed),
+        -- so the remembered line may now be hidden: open the fold over it.
+        fold.reveal(M.state, pos.line)
     end
     restore_position(pos)
     tree.highlight_current(M.state)
