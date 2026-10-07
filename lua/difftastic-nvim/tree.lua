@@ -484,6 +484,9 @@ function M.open(state)
 
         if node.file_idx then
             difft.show_file(node.file_idx)
+            if difft.config.focus_diff_on_select then
+                difft.focus_diff()
+            end
         elseif node.is_dir then
             if node:is_expanded() then
                 node:collapse()

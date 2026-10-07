@@ -127,7 +127,7 @@ All keybindings are buffer-local and configurable via `setup()`. Defaults:
 | `]c` | Next hunk |
 | `[c` | Previous hunk |
 | `<Tab>` | Toggle focus between file tree and diff |
-| `<CR>` | Open file under cursor (in file tree) |
+| `<CR>` | Open file under cursor (in file tree) and focus its diff pane (see `focus_diff_on_select`) |
 | `gf` | Go to file at cursor position (opens in previous tab or new tab) |
 | `q` | Close diff view |
 
@@ -144,6 +144,7 @@ require("difftastic-nvim").setup({
     highlight_mode = "treesitter", -- "treesitter" (default) or "difftastic"
     hunk_wrap_file = true,          -- Next hunk at last hunk goes to next file
     scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
+    focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
     snacks_picker = {
         enabled = false,          -- opt-in snacks.nvim integration (default: false)
         limit = 200,              -- number of revisions/commits to list in :DifftPick

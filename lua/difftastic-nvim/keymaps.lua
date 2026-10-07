@@ -43,13 +43,7 @@ local function setup_tree_keymaps(state)
     local buf = state.tree_buf
 
     if keys.focus_diff then
-        vim.keymap.set("n", keys.focus_diff, function()
-            -- Back to the diff pane used last; the head (right) pane at first.
-            local win = state.pane_side == "base" and state.left_win or state.right_win
-            if win and vim.api.nvim_win_is_valid(win) then
-                vim.api.nvim_set_current_win(win)
-            end
-        end, { buffer = buf })
+        vim.keymap.set("n", keys.focus_diff, difft.focus_diff, { buffer = buf })
     end
     if keys.next_file then
         vim.keymap.set("n", keys.next_file, difft.next_file, { buffer = buf })

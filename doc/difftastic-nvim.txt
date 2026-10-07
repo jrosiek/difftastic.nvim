@@ -161,6 +161,7 @@ Call the setup function with your options: >lua
         highlight_mode = "treesitter", -- "treesitter" (default) or "difftastic"
         hunk_wrap_file = true, -- Wrap to next/prev file at end/start of hunks
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
+        focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
         snacks_picker = {
             enabled = false,    -- Enable :DifftPick (default: false)
             limit = 200,        -- Max revisions/commits to show (default: 200)
@@ -257,6 +258,14 @@ scroll_to_first_hunk ~
     first hunk of changes instead of the top of the file. A file shown
     before in the same diff view returns to the cursor position and pane
     (base or head) it was left at instead.
+
+    Default: true
+
+focus_diff_on_select ~
+    When enabled, selecting a file in the tree (|difftastic-nvim-keymaps|
+    `select`) also moves focus to its diff pane, the same pane `<Tab>` goes
+    to: the pane the file was left in, else the pane used last, else the
+    head pane. When disabled, focus stays in the tree.
 
     Default: true
 

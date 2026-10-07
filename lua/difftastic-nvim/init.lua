@@ -19,6 +19,8 @@ M.config = {
     hunk_wrap_file = true,
     --- When true, scroll to first hunk after opening a file
     scroll_to_first_hunk = true,
+    --- When true, selecting a file in the tree also moves focus to its diff pane
+    focus_diff_on_select = true,
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -116,6 +118,9 @@ function M.setup(opts)
     end
     if opts.scroll_to_first_hunk ~= nil then
         M.config.scroll_to_first_hunk = opts.scroll_to_first_hunk
+    end
+    if opts.focus_diff_on_select ~= nil then
+        M.config.focus_diff_on_select = opts.focus_diff_on_select
     end
     if opts.keymaps then
         -- Manual merge to preserve explicit false values (tbl_extend ignores them)
@@ -435,6 +440,14 @@ local function restore_position(pos)
     local current = vim.api.nvim_get_current_win()
     if current == M.state.left_win or current == M.state.right_win then
         vim.api.nvim_set_current_win(pane)
+    end
+end
+
+--- Move focus to the diff pane used last; the head (right) pane at first.
+function M.focus_diff()
+    local win = M.state.pane_side == "base" and M.state.left_win or M.state.right_win
+    if win and vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_set_current_win(win)
     end
 end
 

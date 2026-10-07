@@ -426,6 +426,108 @@ describe("per-file cursor positions", function()
     end)
 end)
 
+describe("focus_diff_on_select", function()
+    local original_get, original_option
+    local tree = require("difftastic-nvim.tree")
+
+    before_each(function()
+        difft.config.vcs = "git"
+        original_option = difft.config.focus_diff_on_select
+        original_get = binary.get
+        binary.get = function()
+            return {
+                run_diff = function()
+                    return { files = { long_record("a.txt", 30, 10), long_record("dir/b.txt", 30, 20) } }
+                end,
+            }
+        end
+    end)
+
+    after_each(function()
+        difft.close()
+        binary.get = original_get
+        difft.config.focus_diff_on_select = original_option
+    end)
+
+    --- Puts the tree cursor on the row whose node matches and presses select.
+    local function select(match)
+        vim.api.nvim_set_current_win(difft.state.tree_win)
+        local count = vim.api.nvim_buf_line_count(difft.state.tree_buf)
+        for linenr = 1, count do
+            local node = tree.tree:get_node(linenr)
+            if node and match(node) then
+                vim.api.nvim_win_set_cursor(difft.state.tree_win, { linenr, 0 })
+                vim.api.nvim_feedkeys(vim.keycode(difft.config.keymaps.select), "x", false)
+                return
+            end
+        end
+        error("no matching tree row")
+    end
+
+    local function file(path)
+        return function(node)
+            return node.file_idx and difft.state.files[node.file_idx].path == path
+        end
+    end
+
+    it("is on by default", function()
+        assert.is_true(require("difftastic-nvim").config.focus_diff_on_select)
+    end)
+
+    it("keeps focus in the tree when off", function()
+        difft.config.focus_diff_on_select = false
+        difft.open("HEAD")
+
+        select(file("dir/b.txt"))
+
+        assert.are.equal("dir/b.txt", difft.state.files[difft.state.current_file_idx].path)
+        assert.are.equal(difft.state.tree_win, vim.api.nvim_get_current_win())
+    end)
+
+    it("focuses the head pane at the first hunk of an unvisited file", function()
+        difft.config.focus_diff_on_select = true
+        difft.open("HEAD")
+
+        select(file("dir/b.txt"))
+
+        assert.are.equal(difft.state.right_win, vim.api.nvim_get_current_win())
+        assert.are.same({ 21, 0 }, vim.api.nvim_win_get_cursor(difft.state.right_win))
+    end)
+
+    it("focuses the pane and position a visited file was left at", function()
+        difft.config.focus_diff_on_select = true
+        difft.open("HEAD")
+        select(file("a.txt"))
+        vim.api.nvim_set_current_win(difft.state.left_win)
+        vim.api.nvim_win_set_cursor(difft.state.left_win, { 3, 0 })
+        select(file("dir/b.txt"))
+        vim.api.nvim_set_current_win(difft.state.right_win)
+
+        select(file("a.txt"))
+
+        assert.are.equal(difft.state.left_win, vim.api.nvim_get_current_win())
+        assert.are.same({ 3, 0 }, vim.api.nvim_win_get_cursor(difft.state.left_win))
+    end)
+
+    it("keeps focus in the tree when toggling a directory", function()
+        difft.config.focus_diff_on_select = true
+        difft.open("HEAD")
+
+        select(function(node)
+            return node.is_dir
+        end)
+
+        assert.are.equal(difft.state.tree_win, vim.api.nvim_get_current_win())
+    end)
+
+    it("is set through setup()", function()
+        difft.setup({ focus_diff_on_select = true })
+        assert.is_true(difft.config.focus_diff_on_select)
+        difft.setup({ focus_diff_on_select = false })
+        assert.is_false(difft.config.focus_diff_on_select)
+    end)
+end)
+
 --- Pane sync reacts to VimResized, WinResized and WinScrolled. Those are delivered by
 --- Neovim's main loop, which does not run while a spec runs, so these specs drive a
 --- child Neovim over RPC instead.
