@@ -90,10 +90,19 @@ describe("header resize", function()
             resize(width)
 
             assert.are.same({ width, width, width, width }, header_widths())
-            -- Header height and the file tree below it are unchanged.
+            -- Header height and the tree rows' text are unchanged; only the padding up
+            -- to the review marker column follows the width.
             local after = lines()
             assert.are.equal(#before, #after)
-            assert.are.same(vim.list_slice(before, tree.header_lines + 1), vim.list_slice(after, tree.header_lines + 1))
+            local function text(rows)
+                local result = {}
+                for i, row in ipairs(vim.list_slice(rows, tree.header_lines + 1)) do
+                    local marker = vim.fn.strcharpart(row, vim.fn.strchars(row) - 1, 1)
+                    result[i] = { (vim.fn.strcharpart(row, 0, vim.fn.strchars(row) - 1):gsub("%s+$", "")), marker }
+                end
+                return result
+            end
+            assert.are.same(text(before), text(after))
         end)
     end
 
@@ -189,10 +198,11 @@ describe("header resize", function()
 
             local cut = 0
             for _, row in ipairs(tree_rows()) do
-                assert.is_true(vim.fn.strdisplaywidth(row) <= 30, row)
-                if row:sub(-#"…") == "…" then
+                assert.are.equal(30, vim.fn.strdisplaywidth(row), row)
+                if row:find("…", 1, true) then
                     cut = cut + 1
-                    assert.are.equal(30, vim.fn.strdisplaywidth(row), row)
+                    -- The ellipsis ends the text, just before the marker column.
+                    assert.are.equal("…", vim.fn.strcharpart(row, vim.fn.strchars(row) - 3, 1), row)
                 end
             end
             assert.is_true(cut > 0, "no row was cut")
@@ -205,7 +215,7 @@ describe("header resize", function()
 
             local found = false
             for _, row in ipairs(tree_rows()) do
-                assert.are_not.equal("…", row:sub(-#"…"), row)
+                assert.is_nil(row:find("…", 1, true), row)
                 found = found or row:find("file.txt", 1, true) ~= nil
             end
             assert.is_true(found)

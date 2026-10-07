@@ -32,6 +32,8 @@ M.config = {
     fold_fill = "━",
     --- Highlight group whose foreground colours closed folds
     fold_accent = "Directory",
+    --- When true, a file is marked as reviewed when it is shown
+    auto_review = false,
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -42,6 +44,7 @@ M.config = {
         focus_diff = "<Tab>",
         select = "<CR>",
         goto_file = "gf",
+        toggle_reviewed = "R",
     },
     tree = {
         width = 40,
@@ -49,6 +52,10 @@ M.config = {
             enable = true,
             dir_open = "",
             dir_closed = "",
+            --- Review marker of a file not shown yet in this diff view
+            unvisited = "•",
+            --- Review marker of a file marked as reviewed
+            reviewed = "✓",
         },
     },
     snacks_picker = {
@@ -79,6 +86,8 @@ M.state = {
     fold_closed = nil,
     fold_states = {},
     saved_fold_options = {},
+    visited = {},
+    reviewed = {},
 }
 
 local function git_range_label(revset)
@@ -167,6 +176,9 @@ function M.setup(opts)
         else
             M.config.fold_fill = opts.fold_fill
         end
+    end
+    if opts.auto_review ~= nil then
+        M.config.auto_review = opts.auto_review
     end
     if opts.keymaps then
         -- Manual merge to preserve explicit false values (tbl_extend ignores them)
@@ -362,6 +374,8 @@ function M.open(revset)
     M.state.fold_ranges = {}
     M.state.fold_states = {}
     M.state.saved_fold_options = {}
+    M.state.visited = {}
+    M.state.reviewed = {}
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
     -- Store original tabpage and create new one for diff view
@@ -453,6 +467,8 @@ function M.close()
         fold_closed = nil,
         fold_states = {},
         saved_fold_options = {},
+        visited = {},
+        reviewed = {},
     }
 
     -- Switch to original tabpage if valid
@@ -507,6 +523,32 @@ local function restore_position(pos)
     if current == M.state.left_win or current == M.state.right_win then
         vim.api.nvim_set_current_win(pane)
     end
+end
+
+--- Toggle the reviewed mark: in the tree, of the file under the cursor, or of all
+--- files in the directory under it (marking them all unless all are marked);
+--- elsewhere, of the shown file.
+function M.toggle_reviewed()
+    local paths = {}
+    if vim.api.nvim_get_current_win() == M.state.tree_win and tree.tree then
+        local node = tree.tree:get_node()
+        if node then
+            paths = tree.file_paths(node, M.state)
+        end
+    elseif M.state.shown_path then
+        paths = { M.state.shown_path }
+    end
+    if #paths == 0 then
+        return
+    end
+    local all_reviewed = true
+    for _, path in ipairs(paths) do
+        all_reviewed = all_reviewed and M.state.reviewed[path] == true
+    end
+    for _, path in ipairs(paths) do
+        M.state.reviewed[path] = not all_reviewed or nil
+    end
+    tree.refresh_rows(M.state)
 end
 
 --- Move focus to the diff pane used last; the head (right) pane at first.
@@ -579,6 +621,10 @@ function M.show_file(idx)
     local file = M.state.files[idx]
     diff.render(M.state, file)
     M.state.shown_path = file.path
+    M.state.visited[file.path] = true
+    if M.config.auto_review then
+        M.state.reviewed[file.path] = true
+    end
     local folds_restored = fold.render(M.state, file, M.state.fold_states[file.path])
     local pos = M.state.positions[file.path]
     if not pos then
@@ -592,6 +638,8 @@ function M.show_file(idx)
         fold.reveal(M.state, pos.line)
     end
     restore_position(pos)
+    -- The review marker of the shown file may have changed.
+    tree.refresh_rows(M.state)
     tree.highlight_current(M.state)
 end
 

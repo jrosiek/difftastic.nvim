@@ -32,6 +32,12 @@ end, {
     desc = "Open difftastic diff view (no args = unstaged, --staged = staged, or revset/commit)",
 })
 
+vim.api.nvim_create_user_command("DifftToggleReviewed", function()
+    require("difftastic-nvim").toggle_reviewed()
+end, {
+    desc = "Toggle the reviewed mark of the shown file (or of the tree row under the cursor)",
+})
+
 vim.api.nvim_create_user_command("DifftClose", function()
     require("difftastic-nvim").close()
 end, {

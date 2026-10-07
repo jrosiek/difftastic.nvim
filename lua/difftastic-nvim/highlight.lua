@@ -59,6 +59,8 @@ M.linked = {
     DifftTreeDeleted = { link = "Removed" },
     DifftTreeModified = { link = "Changed" },
     DifftTreeRenamed = { link = "Directory" },
+    DifftTreeReviewed = { link = "Added" },
+    DifftTreeUnvisited = { link = "Directory" },
     DifftTreeRange = { link = "BlueItalic" },
 
     -- Picker text highlights

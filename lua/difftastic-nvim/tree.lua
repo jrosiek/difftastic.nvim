@@ -280,6 +280,9 @@ local function fit_row(line, width)
     if not width or line:width() <= width then
         return line
     end
+    if width <= 0 then
+        return NuiLine()
+    end
     local fitted = NuiLine()
     local used = 0
     for _, text in ipairs(line._texts) do
@@ -297,6 +300,23 @@ local function fit_row(line, width)
         end
     end
     return fitted
+end
+
+--- Review marker of a row: reviewed, not shown yet in this view, or none (blank).
+--- @return string glyph, string highlight
+local function review_marker(node, cfg)
+    local state = require("difftastic-nvim").state
+    local file = node.file_idx and state.files[node.file_idx]
+    if not file then
+        return " ", "DifftTreeMuted"
+    end
+    if state.reviewed and state.reviewed[file.path] then
+        return cfg.icons.reviewed, "DifftTreeReviewed"
+    end
+    if state.visited and not state.visited[file.path] then
+        return cfg.icons.unvisited, "DifftTreeUnvisited"
+    end
+    return " ", "DifftTreeMuted"
 end
 
 local function prepare_node(node)
@@ -339,7 +359,20 @@ local function prepare_node(node)
 
     append_stat_chip(line, node.additions, node.deletions)
 
-    return fit_row(line, M.row_width)
+    -- The review marker takes a column of its own at the right edge: the row is
+    -- cut and padded to end just before it, so the text never overlaps it.
+    local marker, marker_hl = review_marker(node, cfg)
+    local column = math.max(display_width(cfg.icons.unvisited), display_width(cfg.icons.reviewed))
+    if M.row_width then
+        line = fit_row(line, M.row_width - column - 1)
+        local pad = M.row_width - column - 1 - line:width()
+        if pad > 0 then
+            line:append(string.rep(" ", pad), "DifftTreeMuted")
+        end
+    end
+    line:append(" ", "DifftTreeMuted")
+    line:append(marker .. string.rep(" ", column - display_width(marker)), marker_hl)
+    return line
 end
 
 --- Width available for text in a window: its width minus the columns drawn left
@@ -561,6 +594,30 @@ function M.refresh_header(state)
     buf.modifiable, buf.readonly = true, false
     render_header(state, M.total_additions or 0, M.total_deletions or 0, M.header_lines)
     buf.modifiable, buf.readonly = modifiable, readonly
+end
+
+--- Paths of the files a node stands for: itself, or every file below a directory.
+--- @param node table NuiTree node
+--- @param state table Plugin state
+--- @return string[]
+function M.file_paths(node, state)
+    local paths = {}
+    local function walk(n)
+        if n.file_idx then
+            local file = state.files[n.file_idx]
+            if file then
+                table.insert(paths, file.path)
+            end
+        end
+        for _, id in ipairs(n:get_child_ids() or {}) do
+            local child = M.tree:get_node(id)
+            if child then
+                walk(child)
+            end
+        end
+    end
+    walk(node)
+    return paths
 end
 
 --- Redraw the tree rows at the tree window's current width, keeping the cursor

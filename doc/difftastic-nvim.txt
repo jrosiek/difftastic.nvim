@@ -97,6 +97,12 @@ Downloaded binaries are stored in: >
     copy vs @). The `--staged` flag shows @ changes since jj has no staging
     area. To view the parent change explicitly, use `:Difft @-` which is
     equivalent to `jj diff -r @-`.
+                                                          *:DifftToggleReviewed*
+:DifftToggleReviewed
+    Toggle the reviewed mark of the shown file. With the cursor in the
+    tree, of the file under it, or of every file in the directory under it
+    (all marked unless all already are). See |difftastic-nvim-review|.
+
                                                                    *:DifftClose*
 :DifftClose
     Close the diff view.
@@ -145,6 +151,7 @@ Default keybindings:
                 tree, back to the diff pane used last; the head pane at
                 first)
     <CR>        Select file or toggle directory (in tree)
+    R           Toggle the reviewed mark (see |:DifftToggleReviewed|)
     <2-LeftMouse>  Same as <CR> on the clicked row (in tree); on the split
                    between the diff panes, give both panes the same width;
                    on the side panel's right border, reset it to tree.width
@@ -165,6 +172,7 @@ Call the setup function with your options: >lua
         hunk_wrap_file = true, -- Wrap to next/prev file at end/start of hunks
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
         focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
+        auto_review = false,  -- Mark a file as reviewed when it is shown (default: false)
         context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
         min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)
         fold_by_default = true, -- Folds start closed (default: true)
@@ -184,6 +192,7 @@ Call the setup function with your options: >lua
             focus_tree = "<Tab>",
             focus_diff = "<Tab>",
             select = "<CR>",
+            toggle_reviewed = "R",
         },
         tree = {
             width = 40,
@@ -191,6 +200,8 @@ Call the setup function with your options: >lua
                 enable = true,
                 dir_open = "",
                 dir_closed = "",
+                unvisited = "•",
+                reviewed = "✓",
             },
         },
         highlights = {
@@ -337,6 +348,7 @@ Keymap options:
     focus_tree      Move focus to the file tree (from diff panes)
     focus_diff      Move focus to the diff pane (from tree)
     select          Select file or toggle directory in tree
+    toggle_reviewed Toggle the reviewed mark (see |difftastic-nvim-review|)
 
                                                            *difftastic-nvim-tree*
 Tree options:
@@ -345,6 +357,19 @@ Tree options:
     icons.enable    Use nvim-web-devicons for file icons (default: true)
     icons.dir_open  Icon for expanded directories (default: "")
     icons.dir_closed  Icon for collapsed directories (default: "")
+    icons.unvisited Review marker of a file not shown yet (default: "•")
+    icons.reviewed  Review marker of a reviewed file (default: "✓")
+
+                                                         *difftastic-nvim-review*
+Review markers:
+
+    A column at the right edge of the tree marks each file's review state:
+    "•" for a file not shown yet in this diff view, nothing for a file that
+    was shown, and "✓" for a file marked as reviewed (|:DifftToggleReviewed|,
+    `R`). Rows are cut before that column, so the markers stay visible in a
+    narrow panel.
+    With `auto_review = true`, showing a file also marks it as reviewed.
+    The marks belong to the open diff view.
 
 ==============================================================================
 7. HIGHLIGHTS                                       *difftastic-nvim-highlights*
@@ -376,6 +401,8 @@ Tree highlights:
     DifftTreeDeleted      Links to `Removed`      Deleted status marker
     DifftTreeModified     Derived from `Changed`  Modified status marker
     DifftTreeRenamed      Links to `Directory`    Renamed status marker
+    DifftTreeReviewed     Links to `Added`        Reviewed file marker
+    DifftTreeUnvisited    Links to `Directory`    File not shown yet
     DifftTreeMuted        Derived from `Comment`  Tree hints and separators
     DifftTreeIndent       Derived from `Comment`  Tree indent guide
     DifftTreeChevron      Derived from `Comment`  Directory expand/collapse chevron
