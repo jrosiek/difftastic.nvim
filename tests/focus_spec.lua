@@ -609,6 +609,54 @@ local function child_nvim()
     }
 end
 
+describe("initial split of the diff panes", function()
+    local original_get, original_columns
+
+    before_each(function()
+        original_columns = vim.o.columns
+        difft.config.vcs = "git"
+        original_get = binary.get
+        binary.get = function()
+            return {
+                run_diff = function()
+                    return { files = { file_record("a.txt") } }
+                end,
+            }
+        end
+    end)
+
+    after_each(function()
+        difft.close()
+        binary.get = original_get
+        vim.o.columns = original_columns
+    end)
+
+    for _, columns in ipairs({ 200, 120, 100, 81, 80, 70, 60 }) do
+        it(("splits the panes evenly in a %d column terminal"):format(columns), function()
+            vim.o.columns = columns
+            difft.open("HEAD")
+
+            local left = vim.api.nvim_win_get_width(difft.state.left_win)
+            local right = vim.api.nvim_win_get_width(difft.state.right_win)
+            local tree_width = vim.api.nvim_win_get_width(difft.state.tree_win)
+            assert.is_true(math.abs(left - right) <= 1, ("%d / %d"):format(left, right))
+            -- Two separators between the three windows.
+            assert.are.equal(columns, tree_width + left + right + 2)
+        end)
+    end
+
+    it("keeps the panes even when Neovim grows after a narrow start", function()
+        vim.o.columns = 70
+        difft.open("HEAD")
+
+        vim.o.columns = 160
+
+        local left = vim.api.nvim_win_get_width(difft.state.left_win)
+        local right = vim.api.nvim_win_get_width(difft.state.right_win)
+        assert.is_true(math.abs(left - right) <= 1, ("%d / %d"):format(left, right))
+    end)
+end)
+
 --- Pane sync reacts to VimResized, WinResized and WinScrolled. Those are delivered by
 --- Neovim's main loop, which does not run while a spec runs, so these specs drive a
 --- child Neovim over RPC instead.

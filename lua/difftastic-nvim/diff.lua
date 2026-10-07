@@ -158,6 +158,11 @@ function M.open(state)
     setup_diff_buffer(state.right_buf)
     setup_diff_window(state.left_win)
     setup_diff_window(state.right_win)
+
+    -- :vsplit gives the new (current) pane at least 'winwidth' columns, so in a
+    -- narrow terminal the base pane would get what is left; split evenly.
+    local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
+    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
 end
 
 --- Render a file's diff content into the left/right panes.
