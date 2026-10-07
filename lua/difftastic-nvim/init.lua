@@ -34,6 +34,8 @@ M.config = {
     fold_accent = "Directory",
     --- When true, a file is marked as reviewed when it is shown
     auto_review = false,
+    --- Most difft processes run at once for a git diff; 0 uses one per CPU
+    max_parallel_difft_calls = 0,
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -181,6 +183,17 @@ function M.setup(opts)
     end
     if opts.auto_review ~= nil then
         M.config.auto_review = opts.auto_review
+    end
+    if opts.max_parallel_difft_calls ~= nil then
+        local value = opts.max_parallel_difft_calls
+        if type(value) ~= "number" or value < 0 or value ~= math.floor(value) then
+            vim.notify(
+                "difftastic-nvim: max_parallel_difft_calls must be a whole number, 0 or more; ignoring " .. vim.inspect(value),
+                vim.log.levels.ERROR
+            )
+        else
+            M.config.max_parallel_difft_calls = value
+        end
     end
     if opts.keymaps then
         -- Manual merge to preserve explicit false values (tbl_extend ignores them)
@@ -356,11 +369,11 @@ function M.open(revset)
 
     local result
     if revset == nil then
-        result = binary.get().run_diff_unstaged(M.config.vcs)
+        result = binary.get().run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
     elseif revset == "--staged" then
-        result = binary.get().run_diff_staged(M.config.vcs)
+        result = binary.get().run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
     else
-        result = binary.get().run_diff(revset, M.config.vcs)
+        result = binary.get().run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
     end
     if not result.files or #result.files == 0 then
         vim.notify("No changes found", vim.log.levels.INFO)

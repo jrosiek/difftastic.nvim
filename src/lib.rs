@@ -317,31 +317,231 @@ fn pair_jj_rename(
     run_difft_on_contents(&file.path, old, new).unwrap_or(file)
 }
 
-/// Runs difftastic via git and parses the JSON output.
-/// Executes `git diff` with difftastic as the external diff tool.
-///
-/// Pass additional arguments to customize the diff:
-/// - `&["HEAD^..HEAD"]` for a commit range
-/// - `&[]` for unstaged changes (working tree vs index)
-/// - `&["--cached"]` for staged changes (index vs HEAD)
-fn run_git_diff(extra_args: &[&str]) -> Result<Vec<difftastic::DifftFile>, String> {
-    let mut args = vec!["-c", "diff.external=difft", "diff"];
-    args.extend(extra_args);
+/// A changed file as `git diff --name-status -z` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitChange {
+    /// Status letter: `A`, `D`, `M`, `R`, `C`, `T`, ...
+    status: char,
+    /// Path before the change; `None` for an added file.
+    old_path: Option<String>,
+    /// Path after the change; `None` for a deleted file.
+    new_path: Option<String>,
+}
+
+/// Parses `git diff --name-status -z` output: `M\0path\0` entries, with two paths
+/// for renames and copies (`R100\0old\0new\0`).
+fn parse_git_name_status_z(output: &[u8]) -> Vec<GitChange> {
+    let mut fields = output
+        .split(|&b| b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned());
+    let mut changes = Vec::new();
+    while let Some(status) = fields.next() {
+        let Some(letter) = status.chars().next() else {
+            continue;
+        };
+        // The output ends with a NUL, which leaves an empty last field: an empty
+        // path means the entry was cut off.
+        let Some(first) = fields.next().filter(|f| !f.is_empty()) else {
+            break;
+        };
+        let change = match letter {
+            'R' | 'C' => {
+                let Some(second) = fields.next().filter(|f| !f.is_empty()) else {
+                    break;
+                };
+                GitChange {
+                    status: letter,
+                    old_path: Some(first),
+                    new_path: Some(second),
+                }
+            }
+            'A' => GitChange {
+                status: letter,
+                old_path: None,
+                new_path: Some(first),
+            },
+            'D' => GitChange {
+                status: letter,
+                old_path: Some(first),
+                new_path: None,
+            },
+            _ => GitChange {
+                status: letter,
+                old_path: Some(first.clone()),
+                new_path: Some(first),
+            },
+        };
+        changes.push(change);
+    }
+    changes
+}
+
+/// Where the two sides of a git diff come from.
+enum GitSide {
+    /// A blob at a revision (`HEAD`, a commit, or `""` for the index).
+    Rev(String),
+    /// The working tree.
+    WorkTree,
+}
+
+/// The sides compared for a diff mode, as `git diff` would compare them.
+fn git_sides(mode: &DiffMode) -> (GitSide, GitSide, Vec<String>) {
+    match mode {
+        DiffMode::Range(range) => {
+            let (old_ref, new_ref) = parse_git_range(range);
+            let args = vec![format!("{old_ref}..{new_ref}")];
+            (GitSide::Rev(old_ref), GitSide::Rev(new_ref), args)
+        }
+        DiffMode::Unstaged => (GitSide::Rev(String::new()), GitSide::WorkTree, Vec::new()),
+        DiffMode::Staged => (
+            GitSide::Rev("HEAD".to_string()),
+            GitSide::Rev(String::new()),
+            vec!["--cached".to_string()],
+        ),
+    }
+}
+
+/// The exact bytes of a file on one side, `None` when it does not exist there.
+fn git_side_bytes(root: &Path, side: &GitSide, path: &str) -> Option<Vec<u8>> {
+    match side {
+        GitSide::Rev(rev) => Command::new("git")
+            .args(["cat-file", "blob", &format!("{rev}:{path}")])
+            .current_dir(root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout),
+        GitSide::WorkTree => {
+            let full = root.join(path);
+            // A symlink is diffed by its target text, as git does.
+            match std::fs::symlink_metadata(&full) {
+                Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&full)
+                    .ok()
+                    .map(|target| target.to_string_lossy().into_owned().into_bytes()),
+                Ok(_) => std::fs::read(&full).ok(),
+                Err(_) => None,
+            }
+        }
+    }
+}
+
+/// A fresh temporary directory for one difft call.
+fn difft_temp_dir() -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("difftastic-nvim-git-{}-{id}", std::process::id()))
+}
+
+/// Runs difft on one changed file the way git's external diff does: the real
+/// path first, `/dev/null` for a missing side, and the new path for a rename,
+/// from the repository root. difft then picks the same language, reads the same
+/// `.gitattributes` and reports the same path as under `git diff`.
+fn run_difft_git_style(
+    root: &Path,
+    change: &GitChange,
+    old: Option<&[u8]>,
+    new: Option<&[u8]>,
+) -> Result<difftastic::DifftFile, String> {
+    let dir = difft_temp_dir();
+    let run = || -> Result<difftastic::DifftFile, String> {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create a temporary directory: {e}"))?;
+        let write = |name: &str, content: Option<&[u8]>| -> Result<PathBuf, String> {
+            match content {
+                Some(bytes) => {
+                    let file = dir.join(name);
+                    std::fs::write(&file, bytes)
+                        .map_err(|e| format!("Failed to write a temporary file: {e}"))?;
+                    Ok(file)
+                }
+                None => Ok(PathBuf::from("/dev/null")),
+            }
+        };
+        let old_file = write("old", old)?;
+        let new_file = write("new", new)?;
+        let path = change
+            .old_path
+            .as_deref()
+            .or(change.new_path.as_deref())
+            .unwrap_or_default();
+
+        let mut cmd = Command::new("difft");
+        cmd.arg(path)
+            .arg(&old_file)
+            .args([".", "."])
+            .arg(&new_file)
+            .args([".", "."]);
+        if let ('R' | 'C', Some(new_path)) = (change.status, change.new_path.as_deref()) {
+            cmd.arg(new_path)
+                .arg(format!("rename from {path}\nrename to {new_path}\n"));
+        }
+        let output = cmd
+            .current_dir(root)
+            .env("DFT_DISPLAY", "json")
+            .env("DFT_UNSTABLE", "yes")
+            .output()
+            .map_err(|e| format!("Failed to run difft: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("difft failed on {path}: {stderr}"));
+        }
+        difftastic::parse(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| format!("Failed to parse difftastic JSON: {e}"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("difft reported nothing for {path}"))
+    };
+    let result = run();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// Runs difftastic on every file `git diff` lists for the mode, up to
+/// `max_parallel` files at a time (0: one per CPU), and returns the entries in
+/// git's order, as `git -c diff.external=difft diff` would.
+fn run_git_diff(
+    mode: &DiffMode,
+    max_parallel: usize,
+) -> Result<Vec<difftastic::DifftFile>, String> {
+    let root = git_root().ok_or_else(|| "Not inside a git repository".to_string())?;
+    let (old_side, new_side, extra_args) = git_sides(mode);
 
     let output = Command::new("git")
-        .args(&args)
-        .env("DFT_DISPLAY", "json")
-        .env("DFT_UNSTABLE", "yes")
+        .args(["diff", "--name-status", "-M", "-z"])
+        .args(&extra_args)
+        .current_dir(&root)
         .output()
         .map_err(|e| format!("Failed to run git: {e}"))?;
-
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("git command failed: {stderr}"));
     }
+    // Unmerged entries have no single old and new side to compare.
+    let changes: Vec<GitChange> = parse_git_name_status_z(&output.stdout)
+        .into_iter()
+        .filter(|c| c.status != 'U')
+        .collect();
 
-    difftastic::parse(&String::from_utf8_lossy(&output.stdout))
-        .map_err(|e| format!("Failed to parse difftastic JSON: {e}"))
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_parallel)
+        .build()
+        .map_err(|e| format!("Failed to start difft workers: {e}"))?;
+    pool.install(|| {
+        changes
+            .par_iter()
+            .map(|change| {
+                let old = change
+                    .old_path
+                    .as_deref()
+                    .and_then(|p| git_side_bytes(&root, &old_side, p));
+                let new = change
+                    .new_path
+                    .as_deref()
+                    .and_then(|p| git_side_bytes(&root, &new_side, p));
+                run_difft_git_style(&root, change, old.as_deref(), new.as_deref())
+            })
+            .collect()
+    })
 }
 
 /// Gets the merge-base of two git refs.
@@ -566,13 +766,15 @@ fn working_tree_content_for_vcs(path: &Path, vcs: &str) -> Option<String> {
 
 /// Unified implementation for running difftastic with any diff mode.
 /// Handles git and jj VCS, fetches file contents, and processes files in parallel.
-fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
+/// `max_parallel` caps how many difft processes run at once for git diffs (0: one
+/// per CPU).
+fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str, max_parallel: usize) -> LuaResult<LuaTable> {
     // Get files and stats based on mode and VCS
     let (files, stats) = match (&mode, vcs) {
         (DiffMode::Range(range), "git") => {
             let (old_ref, new_ref) = parse_git_range(range);
             let git_range = format!("{old_ref}..{new_ref}");
-            let files = run_git_diff(&[&git_range]).map_err(LuaError::RuntimeError)?;
+            let files = run_git_diff(&mode, max_parallel).map_err(LuaError::RuntimeError)?;
             let stats = git_diff_stats(&[&git_range]);
             (files, stats)
         }
@@ -582,7 +784,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
             (files, stats)
         }
         (DiffMode::Unstaged, "git") => {
-            let files = run_git_diff(&[]).map_err(LuaError::RuntimeError)?;
+            let files = run_git_diff(&mode, max_parallel).map_err(LuaError::RuntimeError)?;
             let stats = git_diff_stats(&[]);
             (files, stats)
         }
@@ -592,7 +794,7 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
             (files, stats)
         }
         (DiffMode::Staged, "git") => {
-            let files = run_git_diff(&["--cached"]).map_err(LuaError::RuntimeError)?;
+            let files = run_git_diff(&mode, max_parallel).map_err(LuaError::RuntimeError)?;
             let stats = git_diff_stats(&["--cached"]);
             (files, stats)
         }
@@ -730,18 +932,24 @@ fn run_diff_impl(lua: &Lua, mode: DiffMode, vcs: &str) -> LuaResult<LuaTable> {
 }
 
 /// Runs difftastic for a commit range.
-fn run_diff(lua: &Lua, (range, vcs): (String, String)) -> LuaResult<LuaTable> {
-    run_diff_impl(lua, DiffMode::Range(range), &vcs)
+fn run_diff(
+    lua: &Lua,
+    (range, vcs, max_parallel): (String, String, Option<usize>),
+) -> LuaResult<LuaTable> {
+    run_diff_impl(lua, DiffMode::Range(range), &vcs, max_parallel.unwrap_or(0))
 }
 
 /// Runs difftastic for unstaged changes.
-fn run_diff_unstaged(lua: &Lua, vcs: String) -> LuaResult<LuaTable> {
-    run_diff_impl(lua, DiffMode::Unstaged, &vcs)
+fn run_diff_unstaged(
+    lua: &Lua,
+    (vcs, max_parallel): (String, Option<usize>),
+) -> LuaResult<LuaTable> {
+    run_diff_impl(lua, DiffMode::Unstaged, &vcs, max_parallel.unwrap_or(0))
 }
 
 /// Runs difftastic for staged changes.
-fn run_diff_staged(lua: &Lua, vcs: String) -> LuaResult<LuaTable> {
-    run_diff_impl(lua, DiffMode::Staged, &vcs)
+fn run_diff_staged(lua: &Lua, (vcs, max_parallel): (String, Option<usize>)) -> LuaResult<LuaTable> {
+    run_diff_impl(lua, DiffMode::Staged, &vcs, max_parallel.unwrap_or(0))
 }
 
 /// Creates the Lua module exports. Called by mlua when loaded via `require("difftastic_nvim")`.
@@ -750,15 +958,15 @@ fn difftastic_nvim(lua: &Lua) -> LuaResult<LuaTable> {
     let exports = lua.create_table()?;
     exports.set(
         "run_diff",
-        lua.create_function(|lua, args: (String, String)| run_diff(lua, args))?,
+        lua.create_function(|lua, args: (String, String, Option<usize>)| run_diff(lua, args))?,
     )?;
     exports.set(
         "run_diff_unstaged",
-        lua.create_function(|lua, vcs: String| run_diff_unstaged(lua, vcs))?,
+        lua.create_function(|lua, args: (String, Option<usize>)| run_diff_unstaged(lua, args))?,
     )?;
     exports.set(
         "run_diff_staged",
-        lua.create_function(|lua, vcs: String| run_diff_staged(lua, vcs))?,
+        lua.create_function(|lua, args: (String, Option<usize>)| run_diff_staged(lua, args))?,
     )?;
     Ok(exports)
 }
@@ -1112,5 +1320,61 @@ mod tests {
         assert_eq!(file.path, PathBuf::from("b.txt"));
         assert_eq!(file.status, difftastic::Status::Unchanged);
         assert!(file.chunks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_git_name_status_z_statuses() {
+        let out = b"M\0mod.py\0A\0new file.txt\0D\0gone.rs\0R087\0old.rs\0dir/new.rs\0T\0link\0";
+        let changes = parse_git_name_status_z(out);
+        let expect = |status, old: Option<&str>, new: Option<&str>| GitChange {
+            status,
+            old_path: old.map(String::from),
+            new_path: new.map(String::from),
+        };
+        assert_eq!(
+            changes,
+            vec![
+                expect('M', Some("mod.py"), Some("mod.py")),
+                expect('A', None, Some("new file.txt")),
+                expect('D', Some("gone.rs"), None),
+                expect('R', Some("old.rs"), Some("dir/new.rs")),
+                expect('T', Some("link"), Some("link")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_git_name_status_z_copy_and_unicode() {
+        let out = "C100\0src/a.rs\0src/żółw é.rs\0".as_bytes();
+        let changes = parse_git_name_status_z(out);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].status, 'C');
+        assert_eq!(changes[0].old_path.as_deref(), Some("src/a.rs"));
+        assert_eq!(changes[0].new_path.as_deref(), Some("src/żółw é.rs"));
+    }
+
+    #[test]
+    fn test_parse_git_name_status_z_empty_and_truncated() {
+        assert!(parse_git_name_status_z(b"").is_empty());
+        // A rename cut off after its first path is dropped rather than misread.
+        assert!(parse_git_name_status_z(b"R100\0only-old\0").is_empty());
+    }
+
+    #[test]
+    fn test_git_sides_follow_the_diff_mode() {
+        let (old, new, args) = git_sides(&DiffMode::Staged);
+        assert!(matches!(old, GitSide::Rev(ref r) if r == "HEAD"));
+        assert!(matches!(new, GitSide::Rev(ref r) if r.is_empty()));
+        assert_eq!(args, vec!["--cached".to_string()]);
+
+        let (old, new, args) = git_sides(&DiffMode::Unstaged);
+        assert!(matches!(old, GitSide::Rev(ref r) if r.is_empty()));
+        assert!(matches!(new, GitSide::WorkTree));
+        assert!(args.is_empty());
+
+        let (old, new, args) = git_sides(&DiffMode::Range("a..b".to_string()));
+        assert!(matches!(old, GitSide::Rev(ref r) if r == "a"));
+        assert!(matches!(new, GitSide::Rev(ref r) if r == "b"));
+        assert_eq!(args, vec!["a..b".to_string()]);
     }
 }
