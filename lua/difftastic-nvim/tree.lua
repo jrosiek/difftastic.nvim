@@ -306,6 +306,19 @@ end
 --- @return string glyph, string highlight
 local function review_marker(node, cfg)
     local state = require("difftastic-nvim").state
+    if node.is_dir then
+        -- A directory is reviewed once every file in it is.
+        local paths = M.file_paths(node, state)
+        for _, path in ipairs(paths) do
+            if not (state.reviewed and state.reviewed[path]) then
+                return " ", "DifftTreeMuted"
+            end
+        end
+        if #paths > 0 then
+            return cfg.icons.reviewed, "DifftTreeReviewed"
+        end
+        return " ", "DifftTreeMuted"
+    end
     local file = node.file_idx and state.files[node.file_idx]
     if not file then
         return " ", "DifftTreeMuted"
@@ -411,6 +424,15 @@ local function render_header(state, total_add, total_del, replace_lines)
 
     local file_count = #(state.files or {})
     local file_label = file_count == 1 and "1 file" or (file_count .. " files")
+    local reviewed_count = 0
+    for _, file in ipairs(state.files or {}) do
+        if state.reviewed and state.reviewed[file.path] then
+            reviewed_count = reviewed_count + 1
+        end
+    end
+    if reviewed_count > 0 then
+        file_label = ("%d/%d reviewed"):format(reviewed_count, file_count)
+    end
 
     local add_text = "+" .. total_add
     local del_text = "-" .. total_del
@@ -632,6 +654,55 @@ function M.refresh_rows(state)
     M.tree:render()
     M.highlight_current(state)
     vim.api.nvim_win_set_cursor(state.tree_win, cursor)
+end
+
+--- File indices of every file in tree order, inside collapsed directories too.
+--- @return number[]
+function M.all_files_in_order()
+    local files = {}
+    if not M.tree then
+        return files
+    end
+    local function walk(parent_id)
+        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+            if node.file_idx then
+                table.insert(files, node.file_idx)
+            end
+            if node:has_children() then
+                walk(node:get_id())
+            end
+        end
+    end
+    walk(nil)
+    return files
+end
+
+--- Expand the directories around a file, so its row is visible.
+--- @param file_idx number
+function M.reveal_file(file_idx)
+    if not M.tree then
+        return
+    end
+    local changed = false
+    local function walk(parent_id)
+        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+            if node.file_idx == file_idx then
+                return true
+            end
+            if node:has_children() and walk(node:get_id()) then
+                if not node:is_expanded() then
+                    node:expand()
+                    changed = true
+                end
+                return true
+            end
+        end
+        return false
+    end
+    walk(nil)
+    if changed then
+        M.tree:render()
+    end
 end
 
 local function collect_visible_files(tree)

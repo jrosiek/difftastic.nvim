@@ -45,6 +45,8 @@ M.config = {
         select = "<CR>",
         goto_file = "gf",
         toggle_reviewed = "R",
+        next_unreviewed = "]u",
+        prev_unreviewed = "[u",
     },
     tree = {
         width = 40,
@@ -548,7 +550,41 @@ function M.toggle_reviewed()
     for _, path in ipairs(paths) do
         M.state.reviewed[path] = not all_reviewed or nil
     end
+    tree.refresh_header(M.state)
     tree.refresh_rows(M.state)
+end
+
+--- Show the next (direction 1) or previous (-1) file not marked as reviewed, in
+--- tree order and wrapping around; collapsed directories around it are opened.
+local function step_unreviewed(direction)
+    local order = tree.all_files_in_order()
+    local current = M.state.current_file_idx
+    local pos = 0
+    for i, idx in ipairs(order) do
+        if idx == current then
+            pos = i
+        end
+    end
+    for step = 1, #order do
+        local idx = order[(pos - 1 + direction * step) % #order + 1]
+        local file = M.state.files[idx]
+        if idx ~= current and file and not M.state.reviewed[file.path] then
+            tree.reveal_file(idx)
+            M.show_file(idx)
+            return
+        end
+    end
+    vim.notify("difftastic-nvim: no other file left to review", vim.log.levels.INFO)
+end
+
+--- Show the next file not marked as reviewed.
+function M.next_unreviewed()
+    step_unreviewed(1)
+end
+
+--- Show the previous file not marked as reviewed.
+function M.prev_unreviewed()
+    step_unreviewed(-1)
 end
 
 --- Move focus to the diff pane used last; the head (right) pane at first.
@@ -622,8 +658,9 @@ function M.show_file(idx)
     diff.render(M.state, file)
     M.state.shown_path = file.path
     M.state.visited[file.path] = true
-    if M.config.auto_review then
+    if M.config.auto_review and not M.state.reviewed[file.path] then
         M.state.reviewed[file.path] = true
+        tree.refresh_header(M.state)
     end
     local folds_restored = fold.render(M.state, file, M.state.fold_states[file.path])
     local pos = M.state.positions[file.path]

@@ -315,4 +315,170 @@ describe("review markers", function()
         assert.are.same({}, difft.state.reviewed)
         assert.are.equal("•", marker("z.txt"))
     end)
+
+    describe("navigation to unreviewed files", function()
+        local function shown()
+            return difft.state.shown_path
+        end
+
+        it("goes to the next and previous unreviewed file in tree order", function()
+            difft.open("HEAD")
+            assert.are.equal("dir/b.txt", shown())
+            vim.api.nvim_set_current_win(difft.state.right_win)
+
+            press("]u")
+            assert.are.equal("dir/c.txt", shown())
+            press("[u")
+            assert.are.equal("dir/b.txt", shown())
+        end)
+
+        it("skips reviewed files and wraps around", function()
+            difft.open("HEAD")
+            in_tree_on((file_row("dir/c.txt")))
+            press("R")
+            in_tree_on((file_row("a.txt")))
+            press("R")
+            vim.api.nvim_set_current_win(difft.state.right_win)
+
+            press("]u")
+            assert.are.equal("z.txt", shown())
+            press("]u")
+            assert.are.equal("dir/b.txt", shown())
+            press("[u")
+            assert.are.equal("z.txt", shown())
+        end)
+
+        it("works from the tree", function()
+            difft.open("HEAD")
+            vim.api.nvim_set_current_win(difft.state.tree_win)
+
+            press("]u")
+
+            assert.are.equal("dir/c.txt", shown())
+        end)
+
+        it("says so when no other file is left to review", function()
+            difft.open("HEAD")
+            in_tree_on((dir_row("dir")))
+            press("R")
+            for _, path in ipairs({ "a.txt", "z.txt" }) do
+                in_tree_on((file_row(path)))
+                press("R")
+            end
+            -- The shown file was reviewed with its directory; unmark it.
+            vim.api.nvim_set_current_win(difft.state.right_win)
+            press("R")
+            local messages, original_notify = {}, vim.notify
+            vim.notify = function(msg)
+                table.insert(messages, msg)
+            end
+
+            press("]u")
+            vim.notify = original_notify
+
+            assert.are.equal("dir/b.txt", shown())
+            assert.are.equal(1, #messages)
+            assert.truthy(messages[1]:find("no other file left to review", 1, true))
+        end)
+
+        it("opens a collapsed directory around the file it goes to", function()
+            difft.open("HEAD")
+            show("a.txt")
+            local node = tree.tree:get_node((dir_row("dir")))
+            node:collapse()
+            tree.tree:render()
+            vim.api.nvim_set_current_win(difft.state.right_win)
+
+            press("[u")
+
+            assert.are.equal("dir/c.txt", shown())
+            assert.is_true(tree.tree:get_node((dir_row("dir"))):is_expanded())
+            local ns = vim.api.nvim_create_namespace("difft-tree-current")
+            local marks = vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, ns, 0, -1, {})
+            assert.are.equal(file_row("dir/c.txt") - 1, marks[1][2])
+        end)
+
+        it("leaves ]u and [u alone when the keys are disabled", function()
+            difft.config.keymaps.next_unreviewed = false
+            difft.config.keymaps.prev_unreviewed = false
+            difft.open("HEAD")
+
+            vim.api.nvim_set_current_win(difft.state.right_win)
+            assert.are.same({}, vim.fn.maparg("]u", "n", false, true))
+            assert.are.same({}, vim.fn.maparg("[u", "n", false, true))
+        end)
+    end)
+
+    describe("progress in the header", function()
+        local function file_line()
+            return vim.api.nvim_buf_get_lines(difft.state.tree_buf, 1, 2, false)[1]
+        end
+
+        it("shows the file count while nothing is reviewed", function()
+            difft.open("HEAD")
+
+            assert.truthy(file_line():find("4 files", 1, true), file_line())
+        end)
+
+        it("counts reviewed files as they are marked and unmarked", function()
+            difft.open("HEAD")
+            vim.api.nvim_set_current_win(difft.state.right_win)
+
+            press("R")
+            assert.truthy(file_line():find("1/4 reviewed", 1, true), file_line())
+            in_tree_on((dir_row("dir")))
+            press("R")
+            assert.truthy(file_line():find("2/4 reviewed", 1, true), file_line())
+            press("R")
+            assert.truthy(file_line():find("4 files", 1, true), file_line())
+        end)
+
+        it("updates the header without warnings about the read-only tree buffer", function()
+            difft.open("HEAD")
+            -- Neovim warns only on the first change to an unmodified buffer.
+            vim.bo[difft.state.tree_buf].modified = false
+            vim.v.warningmsg = ""
+            vim.api.nvim_set_current_win(difft.state.right_win)
+
+            press("R")
+
+            assert.are.equal("", vim.v.warningmsg)
+        end)
+
+        it("counts files reviewed automatically", function()
+            difft.config.auto_review = true
+            difft.open("HEAD")
+            show("z.txt")
+
+            assert.truthy(file_line():find("2/4 reviewed", 1, true), file_line())
+        end)
+    end)
+
+    describe("directory marker", function()
+        local function dir_marker()
+            local _, text = dir_row("dir")
+            return vim.fn.strcharpart(text, vim.fn.strchars(text) - 1, 1)
+        end
+
+        it("shows reviewed once every file in the directory is", function()
+            difft.open("HEAD")
+            assert.are.equal(" ", dir_marker())
+
+            in_tree_on((file_row("dir/b.txt")))
+            press("R")
+            assert.are.equal(" ", dir_marker())
+            in_tree_on((file_row("dir/c.txt")))
+            press("R")
+            assert.are.equal("✓", dir_marker())
+            press("R")
+            assert.are.equal(" ", dir_marker())
+        end)
+
+        it("never shows the unvisited marker", function()
+            difft.open("HEAD")
+            show("a.txt")
+
+            assert.are.equal(" ", dir_marker())
+        end)
+    end)
 end)

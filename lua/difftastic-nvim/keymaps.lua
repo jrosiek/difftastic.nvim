@@ -29,6 +29,12 @@ local function setup_diff_keymaps(buf, state)
     if keys.toggle_reviewed then
         vim.keymap.set("n", keys.toggle_reviewed, difft.toggle_reviewed, { buffer = buf })
     end
+    if keys.next_unreviewed then
+        vim.keymap.set("n", keys.next_unreviewed, difft.next_unreviewed, { buffer = buf })
+    end
+    if keys.prev_unreviewed then
+        vim.keymap.set("n", keys.prev_unreviewed, difft.prev_unreviewed, { buffer = buf })
+    end
     if keys.focus_tree then
         vim.keymap.set("n", keys.focus_tree, function()
             if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
@@ -61,6 +67,12 @@ local function setup_tree_keymaps(state)
     end
     if keys.toggle_reviewed then
         vim.keymap.set("n", keys.toggle_reviewed, difft.toggle_reviewed, { buffer = buf })
+    end
+    if keys.next_unreviewed then
+        vim.keymap.set("n", keys.next_unreviewed, difft.next_unreviewed, { buffer = buf })
+    end
+    if keys.prev_unreviewed then
+        vim.keymap.set("n", keys.prev_unreviewed, difft.prev_unreviewed, { buffer = buf })
     end
 end
 

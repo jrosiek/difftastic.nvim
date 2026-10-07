@@ -152,6 +152,8 @@ Default keybindings:
                 first)
     <CR>        Select file or toggle directory (in tree)
     R           Toggle the reviewed mark (see |:DifftToggleReviewed|)
+    ]u          Next file not marked as reviewed
+    [u          Previous file not marked as reviewed
     <2-LeftMouse>  Same as <CR> on the clicked row (in tree); on the split
                    between the diff panes, give both panes the same width;
                    on the side panel's right border, reset it to tree.width
@@ -193,6 +195,8 @@ Call the setup function with your options: >lua
             focus_diff = "<Tab>",
             select = "<CR>",
             toggle_reviewed = "R",
+            next_unreviewed = "]u",
+            prev_unreviewed = "[u",
         },
         tree = {
             width = 40,
@@ -349,6 +353,8 @@ Keymap options:
     focus_diff      Move focus to the diff pane (from tree)
     select          Select file or toggle directory in tree
     toggle_reviewed Toggle the reviewed mark (see |difftastic-nvim-review|)
+    next_unreviewed Show the next file not marked as reviewed
+    prev_unreviewed Show the previous file not marked as reviewed
 
                                                            *difftastic-nvim-tree*
 Tree options:
@@ -369,7 +375,10 @@ Review markers:
     `R`). Rows are cut before that column, so the markers stay visible in a
     narrow panel.
     With `auto_review = true`, showing a file also marks it as reviewed.
-    The marks belong to the open diff view.
+    A directory shows "✓" once every file in it is reviewed, and the header
+    box counts the reviewed files ("3/12 reviewed"). `]u` and `[u` show the
+    next and previous file not marked as reviewed, in tree order, opening
+    collapsed directories as needed. The marks belong to the open diff view.
 
 ==============================================================================
 7. HIGHLIGHTS                                       *difftastic-nvim-highlights*
