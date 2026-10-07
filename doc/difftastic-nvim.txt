@@ -165,6 +165,11 @@ Call the setup function with your options: >lua
         hunk_wrap_file = true, -- Wrap to next/prev file at end/start of hunks
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
         focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
+        context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
+        min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)
+        fold_by_default = true, -- Folds start closed (default: true)
+        fold_fill = "━",       -- Rule across a closed fold (default: "━")
+        fold_accent = "Directory", -- Group whose colour folds take
         snacks_picker = {
             enabled = false,    -- Enable :DifftPick (default: false)
             limit = 200,        -- Max revisions/commits to show (default: 200)
@@ -272,6 +277,48 @@ focus_diff_on_select ~
 
     Default: true
 
+                                                   *difftastic-nvim-folding*
+context_size ~
+    Number of unchanged lines kept visible above and below each change. The
+    remaining unchanged lines are folded, in both diff panes. A file without
+    changes is folded as a whole. 0 turns folding off: the plugin adds no
+    folds and leaves the panes' fold options alone. A negative value is
+    reported as an error and ignored.
+
+    Default: 3
+
+min_fold_size ~
+    Smallest run of unchanged lines that gets folded; shorter runs stay
+    visible. Must be 1 or more; other values are reported and ignored.
+
+    Default: 2
+
+fold_by_default ~
+    When enabled, the folds start closed; otherwise they are created open.
+    A closed fold is a band across the pane with the number of lines it
+    hides centred in a rule: "━━━━ ▸ 42 unchanged lines ━━━━". The diff
+    panes draw it with DifftFold instead of the theme's |hl-Folded|.
+
+    Default: true
+
+fold_fill ~
+    Character of the rule across a closed fold. It is set as the fold item
+    of 'fillchars' in the diff panes only. Must be one character taking one screen cell;
+    other values are reported and ignored. If Neovim rejects it (box
+    drawing characters take two cells with 'ambiwidth' set to "double"),
+    "=" is used instead.
+
+    Default: "━"
+
+fold_accent ~
+    Name of the highlight group whose foreground colours closed folds: the
+    text and rule, and blended into the background, the band (DifftFold).
+    Falls back to Directory when the group has no foreground colour.
+
+    Default: "Directory"
+
+    These settings apply to files shown after they change.
+
                                                         *difftastic-nvim-keymaps*
 Keymap options:
 
@@ -343,6 +390,7 @@ Picker highlights:
 
 Other:
     DifftFiller           Derived from `Normal`   Filler lines for gaps
+    DifftFold             Derived from `Directory` Band and text of a closed fold
 
 Override in setup: >lua
 

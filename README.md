@@ -147,6 +147,11 @@ require("difftastic-nvim").setup({
     hunk_wrap_file = true,          -- Next hunk at last hunk goes to next file
     scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
     focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
+    context_size = 3,             -- Unchanged lines kept around each change; the rest is folded. 0 turns folding off (default: 3)
+    min_fold_size = 2,            -- Smallest run of unchanged lines that gets folded (default: 2)
+    fold_by_default = true,       -- Whether those folds start closed (default: true)
+    fold_fill = "━",              -- Character of the rule across a closed fold (default: "━")
+    fold_accent = "Directory",    -- Highlight group whose colour closed folds take (default: "Directory")
     snacks_picker = {
         enabled = false,          -- opt-in snacks.nvim integration (default: false)
         limit = 200,              -- number of revisions/commits to list in :DifftPick
@@ -247,6 +252,7 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | Group | Default | Description |
 |-------|---------|-------------|
 | `DifftFiller` | Derived from `Normal` | Filler lines for alignment gaps |
+| `DifftFold` | Derived from `fold_accent` (`Directory`) | Band and text of a closed fold of unchanged lines (used for `Folded` in the diff panes) |
 
 ## License
 

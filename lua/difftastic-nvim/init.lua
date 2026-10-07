@@ -6,6 +6,7 @@ local diff = require("difftastic-nvim.diff")
 local tree = require("difftastic-nvim.tree")
 local highlight = require("difftastic-nvim.highlight")
 local keymaps = require("difftastic-nvim.keymaps")
+local fold = require("difftastic-nvim.fold")
 
 local record_position -- defined with the per-file positions below
 
@@ -21,6 +22,16 @@ M.config = {
     scroll_to_first_hunk = true,
     --- When true, selecting a file in the tree also moves focus to its diff pane
     focus_diff_on_select = true,
+    --- Unchanged lines kept unfolded around each change; 0 turns folding off
+    context_size = 3,
+    --- Smallest run of unchanged lines that gets folded
+    min_fold_size = 2,
+    --- When true, folds start closed
+    fold_by_default = true,
+    --- Character filling a closed fold's line (one screen cell)
+    fold_fill = "━",
+    --- Highlight group whose foreground colours closed folds
+    fold_accent = "Directory",
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -64,6 +75,8 @@ M.state = {
     pane_side = nil,
     positions = {},
     shown_path = nil,
+    fold_ranges = {},
+    saved_fold_options = {},
 }
 
 local function git_range_label(revset)
@@ -121,6 +134,37 @@ function M.setup(opts)
     end
     if opts.focus_diff_on_select ~= nil then
         M.config.focus_diff_on_select = opts.focus_diff_on_select
+    end
+    if opts.context_size ~= nil then
+        if type(opts.context_size) ~= "number" or opts.context_size < 0 then
+            vim.notify("difftastic-nvim: context_size must be 0 or more, ignoring " .. vim.inspect(opts.context_size), vim.log.levels.ERROR)
+        else
+            M.config.context_size = math.floor(opts.context_size)
+        end
+    end
+    if opts.min_fold_size ~= nil then
+        if type(opts.min_fold_size) ~= "number" or opts.min_fold_size < 1 then
+            vim.notify("difftastic-nvim: min_fold_size must be 1 or more, ignoring " .. vim.inspect(opts.min_fold_size), vim.log.levels.ERROR)
+        else
+            M.config.min_fold_size = math.floor(opts.min_fold_size)
+        end
+    end
+    if opts.fold_by_default ~= nil then
+        M.config.fold_by_default = opts.fold_by_default
+    end
+    if opts.fold_accent ~= nil then
+        if type(opts.fold_accent) ~= "string" or opts.fold_accent == "" then
+            vim.notify("difftastic-nvim: fold_accent must be a highlight group name, ignoring " .. vim.inspect(opts.fold_accent), vim.log.levels.ERROR)
+        else
+            M.config.fold_accent = opts.fold_accent
+        end
+    end
+    if opts.fold_fill ~= nil then
+        if type(opts.fold_fill) ~= "string" or vim.fn.strchars(opts.fold_fill) ~= 1 or vim.fn.strdisplaywidth(opts.fold_fill) ~= 1 then
+            vim.notify("difftastic-nvim: fold_fill must be a single one-cell character, ignoring " .. vim.inspect(opts.fold_fill), vim.log.levels.ERROR)
+        else
+            M.config.fold_fill = opts.fold_fill
+        end
     end
     if opts.keymaps then
         -- Manual merge to preserve explicit false values (tbl_extend ignores them)
@@ -302,6 +346,8 @@ function M.open(revset)
     M.state.positions = {}
     M.state.shown_path = nil
     M.state.pane_side = nil
+    M.state.fold_ranges = {}
+    M.state.saved_fold_options = {}
     M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
 
     -- Store original tabpage and create new one for diff view
@@ -387,6 +433,8 @@ function M.close()
         pane_side = nil,
         positions = {},
         shown_path = nil,
+        fold_ranges = {},
+        saved_fold_options = {},
     }
 
     -- Switch to original tabpage if valid
@@ -510,6 +558,7 @@ function M.show_file(idx)
     M.state.current_file_idx = idx
     local file = M.state.files[idx]
     diff.render(M.state, file)
+    fold.render(M.state, file)
     M.state.shown_path = file.path
     local pos = M.state.positions[file.path]
     if not pos then

@@ -86,6 +86,10 @@ local function apply_highlights(overrides)
     local added_fg = get_fg("Added") or "#9ece6a"
     local removed_fg = get_fg("Removed") or "#f7768e"
     local changed_fg = get_fg("Changed") or get_fg("Identifier") or "#7aa2f7"
+    -- Closed folds take their colour from the group named by fold_accent.
+    local plugin = package.loaded["difftastic-nvim"]
+    local fold_accent = plugin and plugin.config and plugin.config.fold_accent or "Directory"
+    local accent_fg = get_fg(fold_accent) or get_fg("Directory") or "#7aa2f7"
 
     local added_bg = blend(added_fg, normal_bg, M.bg_opacity)
     local removed_bg = blend(removed_fg, normal_bg, M.bg_opacity)
@@ -120,6 +124,8 @@ local function apply_highlights(overrides)
         DifftAddedFg = { fg = added_fg, bold = true },
         DifftRemovedFg = { fg = removed_fg, bold = true },
         DifftFiller = { fg = normal_blend },
+        -- A band of the accent colour across a closed fold, with accent text.
+        DifftFold = { fg = accent_fg, bg = blend(accent_fg, normal_bg, 0.18) },
     }
 
     for name, default in pairs(derived) do
