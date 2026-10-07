@@ -1021,12 +1021,84 @@ describe("double click on the split between the diff panes", function()
         assert.are.equal("v", nvim.remote("return vim.api.nvim_get_mode().mode"))
     end)
 
-    it("leaves the split alone on a double click on the tree separator", function()
+    it("leaves the panes alone on a double click on the tree border", function()
         focus("left_win")
         local before = widths()
 
         double_click("tree_win", 5, "split")
 
         assert.are.same(before, widths())
+    end)
+end)
+
+describe("double click on the side panel's right border", function()
+    local nvim
+
+    before_each(function()
+        nvim = child_nvim()
+    end)
+
+    after_each(function()
+        nvim.stop()
+    end)
+
+    local function widths()
+        return nvim.remote([[
+            local s = require("difftastic-nvim").state
+            return {
+                tree = vim.api.nvim_win_get_width(s.tree_win),
+                left = vim.api.nvim_win_get_width(s.left_win),
+                right = vim.api.nvim_win_get_width(s.right_win),
+            }
+        ]])
+    end
+
+    local function double_click_tree_border()
+        nvim.remote([[
+            local win = require("difftastic-nvim").state.tree_win
+            local pos = vim.api.nvim_win_get_position(win)
+            local col = pos[2] + vim.api.nvim_win_get_width(win)
+            for _ = 1, 2 do
+                vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + 5, col)
+                vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + 5, col)
+            end
+        ]])
+        nvim.settle()
+    end
+
+    for _, current in ipairs({ "tree_win", "left_win", "right_win" }) do
+        it("resets the panel to its configured width with " .. current .. " focused", function()
+            nvim.remote([[
+                local s = require("difftastic-nvim").state
+                vim.api.nvim_win_set_width(s.tree_win, 70)
+                vim.api.nvim_set_current_win(s[...])
+            ]], current)
+            nvim.settle()
+            local before = widths()
+            assert.are.equal(70, before.tree)
+
+            double_click_tree_border()
+
+            local w = widths()
+            local configured = nvim.remote("return require('difftastic-nvim').config.tree.width")
+            assert.are.equal(configured, w.tree)
+            assert.are.equal(before.tree + before.left + before.right, w.tree + w.left + w.right)
+            local ratio = before.left / (before.left + before.right)
+            assert.is_true(math.abs(w.left / (w.left + w.right) - ratio) < 0.02, vim.inspect(w))
+            assert.are.equal("n", nvim.remote("return vim.api.nvim_get_mode().mode"))
+        end)
+    end
+
+    it("uses the width set in setup()", function()
+        nvim.remote([[
+            local difft = require("difftastic-nvim")
+            difft.config.tree.width = 55
+            vim.api.nvim_win_set_width(difft.state.tree_win, 70)
+        ]])
+        nvim.settle()
+
+        double_click_tree_border()
+
+        assert.are.equal(55, widths().tree)
     end)
 end)

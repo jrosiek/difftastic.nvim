@@ -146,7 +146,8 @@ Default keybindings:
                 first)
     <CR>        Select file or toggle directory (in tree)
     <2-LeftMouse>  Same as <CR> on the clicked row (in tree); on the split
-                   between the diff panes, give both panes the same width
+                   between the diff panes, give both panes the same width;
+                   on the side panel's right border, reset it to tree.width
     q           Close diff view
 
 Filler lines (shown as diagonal lines) indicate where content exists on one

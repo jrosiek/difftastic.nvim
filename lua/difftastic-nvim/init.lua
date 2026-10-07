@@ -464,16 +464,38 @@ function M.equalize_panes()
     M.state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
 end
 
---- Whether the last mouse event was on the separator between the two diff panes.
---- The separator belongs to the window on its left, one column past its width.
---- @return boolean
-function M.mouse_on_pane_split()
-    local left = M.state.left_win
-    if not (left and vim.api.nvim_win_is_valid(left)) then
-        return false
+--- Give the side panel its configured width (tree.width); the diff panes keep
+--- their ratio.
+function M.reset_tree_width()
+    local tree_win = M.state.tree_win
+    if tree_win and vim.api.nvim_win_is_valid(tree_win) then
+        vim.api.nvim_win_set_width(tree_win, M.config.tree.width)
     end
+end
+
+--- Act on a double click on a split of the view: the split between the diff panes
+--- gives them the same width, the side panel's right border resets its width.
+--- The action runs on the next tick.
+--- @return boolean handled True when the last mouse event was on one of them
+function M.split_double_click()
     local mouse = vim.fn.getmousepos()
-    return mouse.winid == left and mouse.line == 0 and mouse.wincol == vim.api.nvim_win_get_width(left) + 1
+    -- A separator belongs to the window on its left, one column past its width.
+    local function on_right_border(win)
+        return win
+            and vim.api.nvim_win_is_valid(win)
+            and mouse.winid == win
+            and mouse.line == 0
+            and mouse.wincol == vim.api.nvim_win_get_width(win) + 1
+    end
+    if on_right_border(M.state.left_win) then
+        vim.schedule(M.equalize_panes)
+        return true
+    end
+    if on_right_border(M.state.tree_win) then
+        vim.schedule(M.reset_tree_width)
+        return true
+    end
+    return false
 end
 
 --- Show a specific file by index. A file shown before gets its cursor position
