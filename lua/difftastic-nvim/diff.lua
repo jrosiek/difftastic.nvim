@@ -167,9 +167,10 @@ end
 
 --- Render a file's diff content into the left/right panes.
 --- @param state table Plugin state
---- @param file table File data with rows, hunk_starts, language
+--- @param file table File from the library (`base`, `head`, `hunks`, `language`)
 function M.render(state, file)
     local config = require("difftastic-nvim").config
+    require("difftastic-nvim.layout").ensure_rows(file)
     local rows = file.rows or {}
 
     M.hunk_positions = {}

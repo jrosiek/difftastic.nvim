@@ -342,7 +342,7 @@ end
 --- context_size, min_fold_size and fold_by_default settings. With context_size 0
 --- the panes are left without plugin folds.
 --- @param state table Plugin state
---- @param file table File data with rows and hunk_starts
+--- @param file table File from the library (`base`, `head`, `hunks`)
 --- @param saved table|nil The file's recorded fold states (state.fold_states);
 ---   used when the folds are still the same, else fold_by_default applies
 --- @return boolean restored True when the recorded states were used
@@ -357,6 +357,7 @@ function M.render(state, file, saved)
 
     state.fold_ranges = {}
     state.fold_closed = nil
+    require("difftastic-nvim.layout").ensure_rows(file)
     if config.context_size == 0 or not file.rows or #file.rows == 0 then
         for _, win in ipairs(wins) do
             restore(state, win)

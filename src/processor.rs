@@ -143,12 +143,10 @@ pub struct Row {
     pub right: Side,
 }
 
-/// A processed file ready for display in the diff viewer.
-///
-/// Contains all the information needed to render a file's diff in Neovim:
-/// file metadata, the aligned rows for display, and navigation aids.
+/// A file processed into aligned side-by-side rows, fillers included: the
+/// intermediate form [`DisplayFile`] is built from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DisplayFile {
+pub struct AlignedFile {
     pub path: PathBuf,
 
     /// Original path for moved/renamed files, if any.
@@ -193,17 +191,168 @@ pub struct DisplayFile {
 /// The `stats` parameter provides line-based diff stats from the VCS (additions, deletions).
 /// If `None`, stats are computed from the file content.
 #[must_use]
+pub fn align_file(
+    file: DifftFile,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+    stats: Option<(u32, u32)>,
+) -> AlignedFile {
+    match file.status {
+        Status::Created => process_created(file, new_lines, stats),
+        Status::Deleted => process_deleted(file, old_lines, stats),
+        Status::Changed | Status::Unchanged => process_changed(file, &old_lines, &new_lines, stats),
+    }
+}
+
+/// One real line of one side of a file, with the regions to highlight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub content: String,
+    pub highlights: Highlights,
+}
+
+/// One side (base or head) of a file: its real lines and where fillers go.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SideLines {
+    pub lines: Vec<Line>,
+    /// `lines.len() + 1` entries: entry `i` (0-based) is the number of filler
+    /// rows before line `i + 1`; the last entry counts the fillers after the
+    /// last line.
+    pub fillers: Vec<u32>,
+}
+
+/// Where a hunk starts on each side: 1-based line numbers, `None` for a side
+/// with no line in the hunk (only fillers there, e.g. the base side of a pure
+/// addition).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hunk {
+    pub base: Option<u32>,
+    pub head: Option<u32>,
+}
+
+/// A processed file ready for display in the diff viewer: each side's real
+/// lines with the fillers that keep the sides aligned, and the hunks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayFile {
+    pub path: PathBuf,
+
+    /// Original path for moved/renamed files, if any.
+    ///
+    /// When present, `path` is the destination (new path) and `moved_from`
+    /// is the source (old path).
+    pub moved_from: Option<PathBuf>,
+
+    /// The detected programming language.
+    pub language: String,
+
+    pub status: Status,
+
+    /// Count of added lines (for display in file list).
+    pub additions: u32,
+
+    /// Count of deleted lines (for display in file list).
+    pub deletions: u32,
+
+    /// The old version.
+    pub base: SideLines,
+
+    /// The new version.
+    pub head: SideLines,
+
+    /// The hunks, in order.
+    pub hunks: Vec<Hunk>,
+}
+
+/// Whether a row is part of a change: a filler or highlighted on either side.
+fn row_is_changed(row: &Row) -> bool {
+    row.left.is_filler
+        || row.right.is_filler
+        || !row.left.highlights.is_empty()
+        || !row.right.highlights.is_empty()
+}
+
+impl From<AlignedFile> for DisplayFile {
+    /// Splits the aligned rows into each side's real lines and filler counts,
+    /// and turns each hunk's first row into the first line it has on each side.
+    fn from(file: AlignedFile) -> Self {
+        // The 1-based line each row shows on each side, `None` on a filler.
+        let mut base_line_of_row = Vec::with_capacity(file.rows.len());
+        let mut head_line_of_row = Vec::with_capacity(file.rows.len());
+        let (mut base, mut head) = (SideLines::default(), SideLines::default());
+        let (mut base_pending, mut head_pending) = (0, 0);
+        let changed: Vec<bool> = file.rows.iter().map(row_is_changed).collect();
+        for row in file.rows {
+            for (side, out, pending, line_of_row) in [
+                (
+                    row.left,
+                    &mut base,
+                    &mut base_pending,
+                    &mut base_line_of_row,
+                ),
+                (
+                    row.right,
+                    &mut head,
+                    &mut head_pending,
+                    &mut head_line_of_row,
+                ),
+            ] {
+                if side.is_filler {
+                    *pending += 1;
+                    line_of_row.push(None);
+                } else {
+                    out.fillers.push(std::mem::take(pending));
+                    out.lines.push(Line {
+                        content: side.content,
+                        highlights: side.highlights,
+                    });
+                    line_of_row.push(Some(out.lines.len() as u32));
+                }
+            }
+        }
+        base.fillers.push(base_pending);
+        head.fillers.push(head_pending);
+
+        let hunks = file
+            .hunk_starts
+            .iter()
+            .map(|&start| {
+                let start = start as usize;
+                let extent = (start..changed.len()).take_while(|&r| r == start || changed[r]);
+                let mut hunk = Hunk {
+                    base: None,
+                    head: None,
+                };
+                for r in extent {
+                    hunk.base = hunk.base.or(base_line_of_row[r]);
+                    hunk.head = hunk.head.or(head_line_of_row[r]);
+                }
+                hunk
+            })
+            .collect();
+
+        Self {
+            path: file.path,
+            moved_from: file.moved_from,
+            language: file.language,
+            status: file.status,
+            additions: file.additions,
+            deletions: file.deletions,
+            base,
+            head,
+            hunks,
+        }
+    }
+}
+
+/// Processes a difftastic file into display-ready format: see [`align_file`].
+#[must_use]
 pub fn process_file(
     file: DifftFile,
     old_lines: Vec<String>,
     new_lines: Vec<String>,
     stats: Option<(u32, u32)>,
 ) -> DisplayFile {
-    match file.status {
-        Status::Created => process_created(file, new_lines, stats),
-        Status::Deleted => process_deleted(file, old_lines, stats),
-        Status::Changed | Status::Unchanged => process_changed(file, &old_lines, &new_lines, stats),
-    }
+    align_file(file, old_lines, new_lines, stats).into()
 }
 
 /// Processes a newly created file.
@@ -214,7 +363,7 @@ fn process_created(
     file: DifftFile,
     new_lines: Vec<String>,
     stats: Option<(u32, u32)>,
-) -> DisplayFile {
+) -> AlignedFile {
     let num_lines = new_lines.len();
     let rows: Vec<Row> = new_lines
         .into_iter()
@@ -231,7 +380,7 @@ fn process_created(
     let (additions, deletions) = stats.unwrap_or((rows.len() as u32, 0));
     let hunk_starts = if rows.is_empty() { vec![] } else { vec![0] };
 
-    DisplayFile {
+    AlignedFile {
         path: file.path,
         moved_from: None,
         language: file.language,
@@ -252,7 +401,7 @@ fn process_deleted(
     file: DifftFile,
     old_lines: Vec<String>,
     stats: Option<(u32, u32)>,
-) -> DisplayFile {
+) -> AlignedFile {
     let num_lines = old_lines.len();
     let rows: Vec<Row> = old_lines
         .into_iter()
@@ -269,7 +418,7 @@ fn process_deleted(
     let (additions, deletions) = stats.unwrap_or((0, rows.len() as u32));
     let hunk_starts = if rows.is_empty() { vec![] } else { vec![0] };
 
-    DisplayFile {
+    AlignedFile {
         path: file.path,
         moved_from: None,
         language: file.language,
@@ -322,7 +471,7 @@ fn process_changed(
     old_lines: &[String],
     new_lines: &[String],
     stats: Option<(u32, u32)>,
-) -> DisplayFile {
+) -> AlignedFile {
     // Identical content (a pure rename) comes without alignment; align it line by
     // line so the file is shown instead of an empty view.
     if file.aligned_lines.is_empty() && !old_lines.is_empty() && old_lines == new_lines {
@@ -382,7 +531,7 @@ fn process_changed(
     // Use VCS stats if available, otherwise default to 0
     let (additions, deletions) = stats.unwrap_or((0, 0));
 
-    DisplayFile {
+    AlignedFile {
         path: file.path,
         moved_from: None,
         language: file.language,
@@ -437,11 +586,10 @@ impl IntoLua for HighlightRegion {
     }
 }
 
-impl IntoLua for Side {
+impl IntoLua for Line {
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let table = lua.create_table()?;
         table.set("content", self.content)?;
-        table.set("is_filler", self.is_filler)?;
 
         let highlights = lua.create_table_with_capacity(self.highlights.len(), 0)?;
         for (i, highlight) in self.highlights.into_iter().enumerate() {
@@ -453,11 +601,15 @@ impl IntoLua for Side {
     }
 }
 
-impl IntoLua for Row {
+impl IntoLua for SideLines {
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let table = lua.create_table()?;
-        table.set("left", self.left.into_lua(lua)?)?;
-        table.set("right", self.right.into_lua(lua)?)?;
+        let lines = lua.create_table_with_capacity(self.lines.len(), 0)?;
+        for (i, line) in self.lines.into_iter().enumerate() {
+            lines.set(i + 1, line.into_lua(lua)?)?;
+        }
+        table.set("lines", lines)?;
+        table.set("fillers", lua.create_sequence_from(self.fillers)?)?;
         Ok(LuaValue::Table(table))
     }
 }
@@ -484,27 +636,17 @@ impl IntoLua for DisplayFile {
         )?;
         table.set("additions", self.additions)?;
         table.set("deletions", self.deletions)?;
+        table.set("base", self.base.into_lua(lua)?)?;
+        table.set("head", self.head.into_lua(lua)?)?;
 
-        let rows = lua.create_table_with_capacity(self.rows.len(), 0)?;
-        for (i, row) in self.rows.into_iter().enumerate() {
-            rows.set(i + 1, row.into_lua(lua)?)?;
+        let hunks = lua.create_table_with_capacity(self.hunks.len(), 0)?;
+        for (i, hunk) in self.hunks.into_iter().enumerate() {
+            let entry = lua.create_table_with_capacity(0, 2)?;
+            entry.set("base", hunk.base)?;
+            entry.set("head", hunk.head)?;
+            hunks.set(i + 1, entry)?;
         }
-        table.set("rows", rows)?;
-
-        let hunk_starts = lua.create_table_with_capacity(self.hunk_starts.len(), 0)?;
-        for (i, hunk_start) in self.hunk_starts.into_iter().enumerate() {
-            hunk_starts.set(i + 1, hunk_start)?;
-        }
-        table.set("hunk_starts", hunk_starts)?;
-
-        let aligned_lines = lua.create_table_with_capacity(self.aligned_lines.len(), 0)?;
-        for (i, (left, right)) in self.aligned_lines.into_iter().enumerate() {
-            let pair = lua.create_table_with_capacity(2, 0)?;
-            pair.set(1, left)?;
-            pair.set(2, right)?;
-            aligned_lines.set(i + 1, pair)?;
-        }
-        table.set("aligned_lines", aligned_lines)?;
+        table.set("hunks", hunks)?;
 
         Ok(LuaValue::Table(table))
     }
@@ -542,7 +684,7 @@ mod tests {
             aligned_lines: vec![],
             chunks: vec![],
         };
-        let result = process_file(file, vec![], vec!["a".into(), "b".into()], Some((2, 0)));
+        let result = align_file(file, vec![], vec!["a".into(), "b".into()], Some((2, 0)));
 
         assert_eq!(result.rows.len(), 2);
         assert!(result.rows[0].left.is_filler);
@@ -564,7 +706,7 @@ mod tests {
             aligned_lines: vec![],
             chunks: vec![],
         };
-        let result = process_file(file, vec!["x".into(), "y".into()], vec![], Some((0, 2)));
+        let result = align_file(file, vec!["x".into(), "y".into()], vec![], Some((0, 2)));
 
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0].left.content, "x");
@@ -586,7 +728,7 @@ mod tests {
                 rhs: Some(diff_side(1, vec![change(0, 6)])),
             }]],
         };
-        let result = process_file(
+        let result = align_file(
             file,
             vec!["line1".into(), "foo".into(), "line3".into()],
             vec!["line1".into(), "foobar".into(), "line3".into()],
@@ -610,7 +752,7 @@ mod tests {
             chunks: Vec::new(),
         };
         let lines: Vec<String> = vec!["a".into(), "b".into()];
-        let result = process_file(file, lines.clone(), lines, None);
+        let result = align_file(file, lines.clone(), lines, None);
 
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[1].left.content, "b");
@@ -631,7 +773,7 @@ mod tests {
                 rhs: Some(diff_side(1, vec![change(0, 8)])),
             }]],
         };
-        let result = process_file(
+        let result = align_file(
             file,
             vec!["line 1".into(), "line 3".into()],
             vec!["line 1".into(), "new line".into(), "line 3".into()],
@@ -657,7 +799,7 @@ mod tests {
                 rhs: None,
             }]],
         };
-        let result = process_file(
+        let result = align_file(
             file,
             vec!["line 1".into(), "deleted".into(), "line 3".into()],
             vec!["line 1".into(), "line 3".into()],
@@ -789,7 +931,7 @@ mod tests {
             "}".into(),
         ];
 
-        let result = process_file(file, old_lines, new_lines, None);
+        let result = align_file(file, old_lines, new_lines, None);
 
         assert_eq!(result.rows.len(), 5);
         assert_eq!(result.rows[0].left.content, "Self { a, b, c }");
@@ -844,7 +986,7 @@ mod tests {
         ];
         let new_lines = vec!["Self { a, b, c }".into()];
 
-        let result = process_file(file, old_lines, new_lines, None);
+        let result = align_file(file, old_lines, new_lines, None);
 
         assert_eq!(result.rows.len(), 5);
         assert_eq!(result.rows[0].left.content, "Self {");
@@ -901,7 +1043,7 @@ mod tests {
             "fff".into(),
         ];
 
-        let result = process_file(file, old_lines, new_lines, None);
+        let result = align_file(file, old_lines, new_lines, None);
 
         // Should have two hunks: one starting at row 1, one at row 5
         assert_eq!(result.hunk_starts.len(), 2);
@@ -918,7 +1060,7 @@ mod tests {
             aligned_lines: vec![],
             chunks: vec![],
         };
-        let result = process_file(file, vec![], vec!["a".into(), "b".into(), "c".into()], None);
+        let result = align_file(file, vec![], vec!["a".into(), "b".into(), "c".into()], None);
 
         // Created files: left is always None, right maps 0..n
         assert_eq!(result.aligned_lines.len(), 3);
@@ -936,7 +1078,7 @@ mod tests {
             aligned_lines: vec![],
             chunks: vec![],
         };
-        let result = process_file(file, vec!["x".into(), "y".into()], vec![], None);
+        let result = align_file(file, vec!["x".into(), "y".into()], vec![], None);
 
         // Deleted files: left maps 0..n, right is always None
         assert_eq!(result.aligned_lines.len(), 2);
@@ -959,7 +1101,7 @@ mod tests {
             aligned_lines: aligned.clone(),
             chunks: vec![],
         };
-        let result = process_file(
+        let result = align_file(
             file,
             vec!["a".into(), "b".into(), "c".into()],
             vec!["a".into(), "b".into(), "new".into(), "c".into()],
@@ -984,7 +1126,7 @@ mod tests {
             aligned_lines: aligned.clone(),
             chunks: vec![],
         };
-        let result = process_file(
+        let result = align_file(
             file,
             vec!["a".into(), "deleted".into(), "b".into()],
             vec!["a".into(), "b".into()],
@@ -994,5 +1136,167 @@ mod tests {
         assert_eq!(result.aligned_lines, aligned);
         // Row 1 should have right side as filler (None in aligned_lines)
         assert_eq!(result.aligned_lines[1], (Some(1), None));
+    }
+
+    /// A changed file from `(lhs, rhs)` alignment pairs and the lines of each side;
+    /// lines listed in `changed_lhs` / `changed_rhs` are fully changed.
+    fn changed_file(
+        aligned: Vec<(Option<u32>, Option<u32>)>,
+        old: &[&str],
+        new: &[&str],
+        changed_lhs: &[u32],
+        changed_rhs: &[u32],
+    ) -> DisplayFile {
+        let side = |line: u32| diff_side(line, vec![change(0, 1)]);
+        let mut chunk = Vec::new();
+        for &l in changed_lhs {
+            chunk.push(DiffLine {
+                lhs: Some(side(l)),
+                rhs: None,
+            });
+        }
+        for &r in changed_rhs {
+            chunk.push(DiffLine {
+                lhs: None,
+                rhs: Some(side(r)),
+            });
+        }
+        let file = DifftFile {
+            path: "f.txt".into(),
+            language: "Text".into(),
+            status: Status::Changed,
+            aligned_lines: aligned,
+            chunks: vec![chunk],
+        };
+        let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
+        process_file(file, lines(old), lines(new), None)
+    }
+
+    fn contents(side: &SideLines) -> Vec<&str> {
+        side.lines.iter().map(|l| l.content.as_str()).collect()
+    }
+
+    #[test]
+    fn display_file_of_a_created_file_has_only_fillers_on_the_base_side() {
+        let file = DifftFile {
+            path: "new.rs".into(),
+            language: "Rust".into(),
+            status: Status::Created,
+            aligned_lines: vec![],
+            chunks: vec![],
+        };
+        let result = process_file(file, vec![], vec!["a".into(), "b".into()], None);
+
+        assert!(result.base.lines.is_empty());
+        assert_eq!(result.base.fillers, vec![2]);
+        assert_eq!(contents(&result.head), vec!["a", "b"]);
+        assert_eq!(result.head.fillers, vec![0, 0, 0]);
+        assert_eq!(
+            result.hunks,
+            vec![Hunk {
+                base: None,
+                head: Some(1)
+            }]
+        );
+    }
+
+    #[test]
+    fn display_file_of_a_deleted_file_has_only_fillers_on_the_head_side() {
+        let file = DifftFile {
+            path: "old.rs".into(),
+            language: "Rust".into(),
+            status: Status::Deleted,
+            aligned_lines: vec![],
+            chunks: vec![],
+        };
+        let result = process_file(file, vec!["a".into(), "b".into(), "c".into()], vec![], None);
+
+        assert_eq!(contents(&result.base), vec!["a", "b", "c"]);
+        assert_eq!(result.base.fillers, vec![0, 0, 0, 0]);
+        assert!(result.head.lines.is_empty());
+        assert_eq!(result.head.fillers, vec![3]);
+        assert_eq!(
+            result.hunks,
+            vec![Hunk {
+                base: Some(1),
+                head: None
+            }]
+        );
+    }
+
+    #[test]
+    fn display_file_counts_the_fillers_before_each_line() {
+        // An added head line 2, and a base line 3 deleted at the end.
+        let result = changed_file(
+            vec![
+                (Some(0), Some(0)),
+                (None, Some(1)),
+                (Some(1), Some(2)),
+                (Some(2), None),
+            ],
+            &["a", "c", "gone"],
+            &["a", "b", "c"],
+            &[2],
+            &[1],
+        );
+
+        assert_eq!(contents(&result.base), vec!["a", "c", "gone"]);
+        assert_eq!(result.base.fillers, vec![0, 1, 0, 0]);
+        assert_eq!(contents(&result.head), vec!["a", "b", "c"]);
+        assert_eq!(result.head.fillers, vec![0, 0, 0, 1]);
+        assert_eq!(
+            result.hunks,
+            vec![
+                Hunk {
+                    base: None,
+                    head: Some(2)
+                },
+                Hunk {
+                    base: Some(3),
+                    head: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn display_file_hunk_starts_at_the_first_line_of_each_side_in_it() {
+        // A hunk opening with an added head line, then a changed pair.
+        let result = changed_file(
+            vec![
+                (Some(0), Some(0)),
+                (None, Some(1)),
+                (Some(1), Some(2)),
+                (Some(2), Some(3)),
+            ],
+            &["a", "x", "z"],
+            &["a", "new", "y", "z"],
+            &[1],
+            &[1, 2],
+        );
+
+        assert_eq!(
+            result.hunks,
+            vec![Hunk {
+                base: Some(2),
+                head: Some(2)
+            }]
+        );
+        assert_eq!(result.base.fillers, vec![0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn display_file_of_an_unchanged_file_has_no_fillers_or_hunks() {
+        let result = changed_file(
+            vec![(Some(0), Some(0)), (Some(1), Some(1))],
+            &["a", "b"],
+            &["a", "b"],
+            &[],
+            &[],
+        );
+
+        assert_eq!(result.base.fillers, vec![0, 0, 0]);
+        assert_eq!(result.head.fillers, vec![0, 0, 0]);
+        assert!(result.hunks.is_empty());
     }
 }

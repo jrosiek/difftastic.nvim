@@ -3,6 +3,7 @@
 --- binary is missing.
 
 local binary = require("difftastic-nvim.binary")
+local layout = require("difftastic-nvim.layout")
 
 local lib_ok, lib = pcall(binary.get)
 local has_difft = vim.fn.executable("difft") == 1
@@ -10,6 +11,7 @@ local has_difft = vim.fn.executable("difft") == 1
 --- Lines of one side of a file, without filler rows. difft may align one empty
 --- line past the end of the file; it is dropped.
 local function side(file, which)
+    layout.ensure_rows(file)
     local lines = {}
     for _, row in ipairs(file.rows) do
         if not row[which].is_filler then
@@ -26,6 +28,8 @@ end
 local function by_path(result)
     local files = {}
     for _, file in ipairs(result.files) do
+        -- The rows both panes show, rebuilt from each side's lines and fillers.
+        layout.ensure_rows(file)
         files[file.path] = file
     end
     return files
