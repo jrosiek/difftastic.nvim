@@ -8,10 +8,12 @@
 //!
 //! ## Architecture
 //!
-//! The crate is organized into three modules:
+//! The crate is organized into these modules:
 //!
 //! - `difftastic` - Types and parsing for difftastic's JSON output format
 //! - `processor` - Transforms parsed data into aligned side-by-side display rows
+//! - `job` - The shared thread pool, progress reports and cancellation
+//! - `dispatch` - Asynchronous diffs and delivering their callbacks to Lua
 //! - `lib` (this module) - Lua bindings and VCS integration
 //!
 //! ## Usage from Lua
@@ -27,6 +29,13 @@
 //!
 //! -- Get diff for a git commit range
 //! local result = difft.run_diff("main..feature", "git")
+//!
+//! -- Without blocking: callbacks run from poll(), which the caller runs on a timer
+//! local job = difft.run_diff_async({ mode = "range", revset = "HEAD", vcs = "git" },
+//!     function(count, total, message) end, -- return false to cancel
+//!     function(result, err) end)
+//! local pending = difft.poll()
+//! job:cancel()
 //! ```
 //!
 //! ## Environment Variables
@@ -44,6 +53,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod difftastic;
+mod dispatch;
 mod job;
 mod processor;
 
@@ -861,6 +871,12 @@ fn difftastic_nvim(lua: &Lua) -> LuaResult<LuaTable> {
         "run_diff_staged",
         lua.create_function(|lua, args: (String, Option<usize>)| run_diff_staged(lua, args))?,
     )?;
+    lua.set_app_data(dispatch::Dispatcher::new());
+    exports.set(
+        "run_diff_async",
+        lua.create_function(dispatch::run_diff_async)?,
+    )?;
+    exports.set("poll", lua.create_function(dispatch::poll)?)?;
     Ok(exports)
 }
 
