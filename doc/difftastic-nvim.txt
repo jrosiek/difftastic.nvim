@@ -175,7 +175,7 @@ Call the setup function with your options: >lua
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
         focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
         auto_review = false,  -- Mark a file as reviewed when it is shown (default: false)
-        max_parallel_difft_calls = 0, -- difft processes at once (git); 0 = one per CPU
+        max_parallel_difft_calls = 0, -- files processed at once; 0 = one per CPU
         context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
         min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)
         fold_by_default = true, -- Folds start closed (default: true)
@@ -343,10 +343,9 @@ fold_accent ~
     These settings apply to files shown after they change.
 
 max_parallel_difft_calls ~
-    For a git diff, difft runs once per changed file. This is the most
-    difft processes run at the same time; 0 runs one per CPU. Lower it to
-    leave CPUs free; 1 runs one file at a time. Must be a whole number, 0 or
-    more; other values are reported and ignored. jj diffs are not affected.
+    The most changed files one diff processes at the same time; 0 runs one
+    per CPU. Lower it to leave CPUs free; 1 runs one file at a time. Must be
+    a whole number, 0 or more; other values are reported and ignored.
 
     Default: 0
 

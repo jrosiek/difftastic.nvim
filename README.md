@@ -151,7 +151,7 @@ require("difftastic-nvim").setup({
     scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
     focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
     auto_review = false,          -- Mark a file as reviewed when it is shown (default: false)
-    max_parallel_difft_calls = 0, -- difft processes run at once for a git diff; 0 = one per CPU (default: 0)
+    max_parallel_difft_calls = 0, -- Files one diff processes at once; 0 = one per CPU (default: 0)
     context_size = 3,             -- Unchanged lines kept around each change; the rest is folded. 0 turns folding off (default: 3)
     min_fold_size = 2,            -- Smallest run of unchanged lines that gets folded (default: 2)
     fold_by_default = true,       -- Whether those folds start closed (default: true)

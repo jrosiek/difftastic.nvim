@@ -407,6 +407,25 @@ function M.open_when_ready(revset)
     })
 end
 
+--- Width of the loading window that shows progress, so it does not jump as the
+--- progress text changes.
+local PROGRESS_WIDTH = 48
+
+--- Place a loading window centred on the editor.
+--- @param win number
+--- @param width number
+--- @param height number
+local function center_loading(win, width, height)
+    width = math.min(width, math.max(1, vim.o.columns - 4))
+    vim.api.nvim_win_set_config(win, {
+        relative = "editor",
+        width = width,
+        height = height,
+        row = math.max(0, math.floor((vim.o.lines - height - 2) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+    })
+end
+
 --- Show a centred loading window over the current tab, styled like the side
 --- panel's header box: "Loading…" in the top border and the range row below it.
 --- @param kind string Range kind ("Base/Head", "Revset")
@@ -443,53 +462,179 @@ local function show_loading(kind, label)
     return win
 end
 
---- Open diff view for a revision/commit range.
---- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
-function M.open(revset)
-    if M.state.tree_win or M.state.left_win or M.state.right_win then
-        M.close()
+--- One row of `width` cells with a one-cell margin: `left` aligned left, `right`
+--- aligned right, `right` cut at its start ("…") when both do not fit.
+--- @return string row
+--- @return number right_start Byte offset of `right` in the row
+local function spread(left, right, width)
+    local inner = math.max(0, width - 2)
+    local room = inner - vim.fn.strdisplaywidth(left) - ((left ~= "" and right ~= "") and 1 or 0)
+    if vim.fn.strdisplaywidth(right) > room then
+        local cut, start = right, 0
+        while cut ~= "" and vim.fn.strdisplaywidth(cut) > room - 1 do
+            start = start + 1
+            cut = vim.fn.strcharpart(right, start)
+        end
+        right = room > 0 and ("…" .. cut) or ""
     end
-    -- The theme may have changed without a ColorScheme event since setup().
-    highlight.refresh()
+    local gap = math.max(0, inner - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right))
+    return " " .. left .. string.rep(" ", gap) .. right .. " ", 1 + #left + gap
+end
 
-    -- Computing a large diff blocks Neovim, so show the new tab with a loading
-    -- message first.
-    local original_tabpage = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tabnew")
-    local diff_tabpage = vim.api.nvim_get_current_tabpage()
-    -- Let Neovim handle input still queued, such as a terminal resize reported while
-    -- it started up, so the message is centred on the current screen size.
-    vim.wait(0)
-    local loading_win = show_loading(range_context(revset, M.config.vcs))
-    vim.cmd("redraw")
-
-    local ok, result = pcall(function()
-        if revset == nil then
-            return binary.get().run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
-        elseif revset == "--staged" then
-            return binary.get().run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
-        end
-        return binary.get().run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
-    end)
-    if vim.api.nvim_win_is_valid(loading_win) then
-        vim.api.nvim_win_close(loading_win, true)
-    end
-    if not ok or not result.files or #result.files == 0 then
-        -- Nothing to show: leave the loading tab.
-        if vim.api.nvim_tabpage_is_valid(original_tabpage) then
-            vim.api.nvim_set_current_tabpage(original_tabpage)
-        end
-        if vim.api.nvim_tabpage_is_valid(diff_tabpage) then
-            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(diff_tabpage))
-        end
-        if not ok then
-            error(result, 0)
-        end
-        vim.notify("No changes found", vim.log.levels.INFO)
+--- Draw a progress box's two rows at its window's width: the range kind left and
+--- the range right, then the progress numbers left (in the Directory colour) and
+--- the last message right (in normal text).
+--- @param box table From `show_progress_box`
+local function draw_progress_box(box)
+    if not vim.api.nvim_win_is_valid(box.win) then
         return
     end
+    local width = vim.api.nvim_win_get_width(box.win)
+    local range, range_start = spread(box.kind, box.label, width)
+    local progress = spread(box.numbers, box.message, width)
+    vim.bo[box.buf].modifiable = true
+    vim.api.nvim_buf_set_lines(box.buf, 0, -1, false, { range, progress })
+    vim.bo[box.buf].modifiable = false
+    local ns = vim.api.nvim_create_namespace("difft-loading")
+    vim.api.nvim_buf_clear_namespace(box.buf, ns, 0, -1)
+    vim.api.nvim_buf_set_extmark(box.buf, ns, 0, 1, { end_col = 1 + #box.kind, hl_group = "DifftTreeMuted" })
+    if #range - 1 > range_start then
+        vim.api.nvim_buf_set_extmark(box.buf, ns, 0, range_start, { end_col = #range - 1, hl_group = "DifftTreeRange" })
+    end
+    if box.numbers ~= "" then
+        vim.api.nvim_buf_set_extmark(box.buf, ns, 1, 1, { end_col = 1 + #box.numbers, hl_group = "Directory" })
+    end
+end
 
-    M.state.files = result.files
+--- Show the loading window of a diff computed in the background, styled like
+--- `show_loading`, with a second row for the progress.
+--- @param kind string Range kind ("Base/Head", "Revset")
+--- @param label string|nil Range label
+--- @return table box `{ win, buf, width, kind, label, numbers, message }`; `width`
+---   is the width wanted, before limiting it to the screen
+local function show_progress_box(kind, label)
+    label = label or ""
+    local box = { kind = kind, label = label, numbers = "", message = "Starting…" }
+    box.width = math.max(vim.fn.strdisplaywidth(" " .. kind .. "  " .. label .. " "), PROGRESS_WIDTH)
+    local width = math.min(box.width, math.max(1, vim.o.columns - 4))
+    box.buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[box.buf].bufhidden = "wipe"
+    box.win = vim.api.nvim_open_win(box.buf, false, {
+        relative = "editor",
+        width = width,
+        height = 2,
+        row = math.max(0, math.floor((vim.o.lines - 4) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+        style = "minimal",
+        border = "rounded",
+        title = { { " Loading… ", "DifftTreeTitle" } },
+        title_pos = "center",
+        focusable = false,
+        noautocmd = true,
+    })
+    vim.wo[box.win].winhl = "NormalFloat:DifftTreeNormal,FloatBorder:DifftTreeDivider,FloatTitle:DifftTreeTitle"
+    draw_progress_box(box)
+    return box
+end
+
+--- Show progress in a progress box: "3/12 files" left, the last message right.
+--- @param box table From `show_progress_box`
+--- @param count number Steps done
+--- @param total number Steps in all, -1 while unknown
+--- @param message string What was done last; empty keeps the previous message
+local function show_progress(box, count, total, message)
+    box.numbers = total >= 0 and ("%d/%d files"):format(count, total) or ""
+    if message ~= "" then
+        box.message = message
+    end
+    draw_progress_box(box)
+end
+
+--- How often running diffs are polled for progress and results (milliseconds).
+M.poll_interval_ms = 50
+
+local poll_timer = nil
+
+local function stop_polling()
+    if poll_timer then
+        poll_timer:stop()
+        poll_timer:close()
+        poll_timer = nil
+    end
+end
+
+--- Deliver what running diffs reported; stop polling once none is left.
+local function poll()
+    local ok, pending = pcall(function()
+        return binary.get().poll()
+    end)
+    if not ok then
+        vim.notify("difftastic-nvim: " .. tostring(pending), vim.log.levels.ERROR)
+        return
+    end
+    if pending == 0 then
+        stop_polling()
+    end
+end
+
+--- Poll while diffs run. Started with each diff; stops by itself.
+local function ensure_polling()
+    if poll_timer then
+        return
+    end
+    poll_timer = vim.uv.new_timer()
+    -- Timer callbacks run where most of the API is unavailable: poll on the main loop.
+    poll_timer:start(M.poll_interval_ms, M.poll_interval_ms, vim.schedule_wrap(function()
+        if poll_timer then
+            poll()
+        end
+    end))
+end
+
+--- The diff being computed in the background, if any:
+--- `{ tab, original_tab, win, job, group, closed }`.
+local loading = nil
+
+--- Stop the diff being computed in the background: cancel its job and close its
+--- loading window, and with `close_tab` also its tab (going back to the tab the
+--- diff was opened from when the loading tab is current).
+--- @param close_tab boolean
+local function cancel_loading(close_tab)
+    local record = loading
+    if not record then
+        return
+    end
+    loading = nil
+    record.closed = true
+    if record.job then
+        record.job:cancel()
+    end
+    pcall(vim.api.nvim_del_augroup_by_id, record.group)
+    if record.win and vim.api.nvim_win_is_valid(record.win) then
+        vim.api.nvim_win_close(record.win, true)
+    end
+    if close_tab and vim.api.nvim_tabpage_is_valid(record.tab) then
+        if vim.api.nvim_get_current_tabpage() == record.tab and vim.api.nvim_tabpage_is_valid(record.original_tab) then
+            vim.api.nvim_set_current_tabpage(record.original_tab)
+        end
+        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(record.tab))
+    end
+end
+
+--- Leave the tab opened for a diff that has nothing to show, back to the tab the
+--- diff was opened from.
+local function leave_diff_tab(original_tabpage, diff_tabpage)
+    if vim.api.nvim_get_current_tabpage() == diff_tabpage and vim.api.nvim_tabpage_is_valid(original_tabpage) then
+        vim.api.nvim_set_current_tabpage(original_tabpage)
+    end
+    if vim.api.nvim_tabpage_is_valid(diff_tabpage) then
+        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(diff_tabpage))
+    end
+end
+
+--- Build the diff view for computed files in the current tab, the diff tab.
+local function present(files, revset, original_tabpage, diff_tabpage)
+    M.state.files = files
     M.state.current_file_idx = 1
     -- Per-view tracking; also reset when the previous view was closed with :tabclose.
     M.state.positions = {}
@@ -556,8 +701,177 @@ function M.open(revset)
     setup_pane_sync(state)
 end
 
+--- Compute the diff while Neovim stays responsive: the loading window shows the
+--- progress, and the view is built in the diff tab once the result arrives (on
+--- entering that tab, if another tab is current then). Closing the tab, closing
+--- the view, opening another diff or quitting Neovim cancels the computation.
+local function open_async(lib, revset, original_tabpage, diff_tabpage)
+    local record = { tab = diff_tabpage, original_tab = original_tabpage, closed = false }
+    record.box = show_progress_box(range_context(revset, M.config.vcs))
+    record.win = record.box.win
+    -- The close key works in the loading tab as in the view: it cancels the diff.
+    if M.config.keymaps.close then
+        vim.keymap.set("n", M.config.keymaps.close, function()
+            M.close()
+        end, { buffer = vim.api.nvim_get_current_buf(), nowait = true, desc = "Cancel loading the diff" })
+    end
+    loading = record
+
+    local function stale()
+        return loading ~= record or record.closed or not vim.api.nvim_tabpage_is_valid(record.tab)
+    end
+
+    local function finish(result, err)
+        if err or not result.files or #result.files == 0 then
+            cancel_loading(false)
+            leave_diff_tab(original_tabpage, diff_tabpage)
+            if err then
+                vim.notify("difftastic-nvim: " .. err, vim.log.levels.ERROR)
+            else
+                vim.notify("No changes found", vim.log.levels.INFO)
+            end
+            return
+        end
+        local function build()
+            if stale() then
+                return
+            end
+            loading = nil
+            pcall(vim.api.nvim_del_augroup_by_id, record.group)
+            if vim.api.nvim_win_is_valid(record.win) then
+                vim.api.nvim_win_close(record.win, true)
+            end
+            present(result.files, revset, original_tabpage, diff_tabpage)
+        end
+        if vim.api.nvim_get_current_tabpage() == diff_tabpage then
+            build()
+        else
+            -- Windows are laid out in the current tab: wait until the diff tab is.
+            vim.api.nvim_create_autocmd("TabEnter", {
+                group = record.group,
+                callback = function()
+                    if vim.api.nvim_get_current_tabpage() == diff_tabpage then
+                        build()
+                        return true
+                    end
+                end,
+            })
+        end
+    end
+
+    record.group = vim.api.nvim_create_augroup("DifftLoading", { clear = true })
+    vim.api.nvim_create_autocmd("TabClosed", {
+        group = record.group,
+        callback = function()
+            -- The closed tab's handle is still valid while TabClosed runs.
+            vim.schedule(function()
+                if loading == record and not vim.api.nvim_tabpage_is_valid(record.tab) then
+                    cancel_loading(false)
+                end
+            end)
+        end,
+    })
+    vim.api.nvim_create_autocmd("VimResized", {
+        group = record.group,
+        callback = function()
+            if vim.api.nvim_win_is_valid(record.win) then
+                center_loading(record.win, record.box.width, 2)
+                draw_progress_box(record.box)
+            end
+        end,
+    })
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+        group = record.group,
+        callback = function()
+            cancel_loading(false)
+        end,
+    })
+
+    local spec = { vcs = M.config.vcs, max_parallel = M.config.max_parallel_difft_calls }
+    if revset == nil then
+        spec.mode = "unstaged"
+    elseif revset == "--staged" then
+        spec.mode = "staged"
+    else
+        spec.mode, spec.revset = "range", revset
+    end
+    local ok, job = pcall(lib.run_diff_async, spec, function(count, total, message)
+        if stale() then
+            return false
+        end
+        show_progress(record.box, count, total, message)
+    end, function(result, err)
+        if not stale() then
+            finish(result, err)
+        end
+    end)
+    if not ok then
+        cancel_loading(false)
+        leave_diff_tab(original_tabpage, diff_tabpage)
+        error(job, 0)
+    end
+    record.job = job
+    ensure_polling()
+end
+
+--- Open diff view for a revision/commit range.
+--- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
+function M.open(revset)
+    if M.state.tree_win or M.state.left_win or M.state.right_win then
+        M.close()
+    end
+    cancel_loading(true)
+    -- The theme may have changed without a ColorScheme event since setup().
+    highlight.refresh()
+
+    -- Show the new tab with a loading message while the diff is computed.
+    local original_tabpage = vim.api.nvim_get_current_tabpage()
+    vim.cmd("tabnew")
+    local diff_tabpage = vim.api.nvim_get_current_tabpage()
+    -- Let Neovim handle input still queued, such as a terminal resize reported while
+    -- it started up, so the message is centred on the current screen size.
+    vim.wait(0)
+
+    local ok_lib, lib = pcall(binary.get)
+    if ok_lib and type(lib) == "table" and lib.run_diff_async and lib.poll then
+        return open_async(lib, revset, original_tabpage, diff_tabpage)
+    end
+
+    -- A library without asynchronous diffs: compute the diff here, blocking.
+    local loading_win = show_loading(range_context(revset, M.config.vcs))
+    vim.cmd("redraw")
+
+    local ok, result = pcall(function()
+        if not ok_lib then
+            error(lib, 0)
+        end
+        if revset == nil then
+            return lib.run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
+        elseif revset == "--staged" then
+            return lib.run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
+        end
+        return lib.run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+    end)
+    if vim.api.nvim_win_is_valid(loading_win) then
+        vim.api.nvim_win_close(loading_win, true)
+    end
+    if not ok or not result.files or #result.files == 0 then
+        -- Nothing to show: leave the loading tab.
+        leave_diff_tab(original_tabpage, diff_tabpage)
+        if not ok then
+            error(result, 0)
+        end
+        vim.notify("No changes found", vim.log.levels.INFO)
+        return
+    end
+
+    present(result.files, revset, original_tabpage, diff_tabpage)
+end
+
 --- Close the diff view.
 function M.close()
+    -- A diff still being computed: stop it and close its tab.
+    cancel_loading(true)
     local diff_tabpage = M.state.diff_tabpage
     local original_tabpage = M.state.original_tabpage
     -- Settle the state before it is dropped: a fold change still in one pane.
