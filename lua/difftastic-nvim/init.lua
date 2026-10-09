@@ -69,30 +69,55 @@ M.config = {
     },
 }
 
---- Current diff state
-M.state = {
-    current_file_idx = 1,
-    files = {},
-    range_label = nil,
-    range_kind = nil,
-    tree_win = nil,
-    tree_buf = nil,
-    left_win = nil,
-    left_buf = nil,
-    right_win = nil,
-    right_buf = nil,
-    original_tabpage = nil,
-    diff_tabpage = nil,
-    pane_side = nil,
-    positions = {},
-    shown_path = nil,
-    fold_ranges = {},
-    fold_closed = nil,
-    fold_states = {},
-    saved_fold_options = {},
-    visited = {},
-    reviewed = {},
-}
+--- The diff shown in each tab that has one, by tabpage handle.
+--- @type table<number, table>
+local diffs = {}
+
+--- A diff state with nothing shown yet.
+local function new_state()
+    return {
+        current_file_idx = 1,
+        files = {},
+        positions = {},
+        fold_ranges = {},
+        fold_states = {},
+        saved_fold_options = {},
+        visited = {},
+        reviewed = {},
+        hunk_positions = {},
+    }
+end
+
+-- `M.state` is the diff state of the current tab (an empty one in a tab without
+-- a diff). Code that may run while another tab is current, such as autocmds and
+-- callbacks, keeps the state of its own diff instead.
+setmetatable(M, {
+    __index = function(_, key)
+        if key == "state" then
+            return diffs[vim.api.nvim_get_current_tabpage()] or new_state()
+        end
+    end,
+})
+
+--- Create an autocmd belonging to a diff, in the shared augroup `group`; closing
+--- the diff deletes it.
+--- @param owner table Diff state (or loading record) owning the autocmd
+--- @param group string
+--- @param event string|string[]
+--- @param opts table As for nvim_create_autocmd, without `group`
+function M.diff_autocmd(owner, group, event, opts)
+    opts.group = vim.api.nvim_create_augroup(group, { clear = false })
+    owner.autocmds = owner.autocmds or {}
+    table.insert(owner.autocmds, vim.api.nvim_create_autocmd(event, opts))
+end
+
+--- Delete the autocmds created with `diff_autocmd` for `owner`.
+local function delete_autocmds(owner)
+    for _, id in ipairs(owner.autocmds or {}) do
+        pcall(vim.api.nvim_del_autocmd, id)
+    end
+    owner.autocmds = {}
+end
 
 local function git_range_label(revset)
     if revset == nil then
@@ -256,9 +281,7 @@ local function setup_pane_sync(state)
     end
     remember_widths()
 
-    local group = vim.api.nvim_create_augroup("DifftPaneSync", { clear = true })
-    vim.api.nvim_create_autocmd("VimResized", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSync", "VimResized", {
         callback = function()
             if not valid() then
                 return true -- diff view closed: drop this autocmd
@@ -271,8 +294,7 @@ local function setup_pane_sync(state)
             end
         end,
     })
-    vim.api.nvim_create_autocmd("TabEnter", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSync", "TabEnter", {
         callback = function()
             if not valid() then
                 return true
@@ -286,8 +308,7 @@ local function setup_pane_sync(state)
     -- A split the user drags between the panes sets the ratio for later resizes. A
     -- tree width change takes its columns from the base pane alone, so the panes
     -- are put back in their ratio instead.
-    vim.api.nvim_create_autocmd("WinResized", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSync", "WinResized", {
         callback = function()
             if not valid() then
                 return true
@@ -318,8 +339,7 @@ local function setup_pane_sync(state)
     })
     -- Folds belong to each window; opening or closing one in a pane is copied to
     -- the other pane once Neovim is idle, whatever did it (keys, mouse, commands).
-    vim.api.nvim_create_autocmd("SafeState", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSync", "SafeState", {
         callback = function()
             if not valid() then
                 return true
@@ -327,8 +347,7 @@ local function setup_pane_sync(state)
             fold.sync(state)
         end,
     })
-    vim.api.nvim_create_autocmd("WinScrolled", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSync", "WinScrolled", {
         callback = function()
             if not valid() then
                 return true
@@ -591,25 +610,22 @@ local function ensure_polling()
     end))
 end
 
---- The diff being computed in the background, if any:
---- `{ tab, original_tab, win, job, group, closed }`.
-local loading = nil
-
---- Stop the diff being computed in the background: cancel its job and close its
---- loading window, and with `close_tab` also its tab (going back to the tab the
---- diff was opened from when the loading tab is current).
+--- Stop a diff being computed in the background (`state.loading`): cancel its
+--- job and close its loading window, and with `close_tab` also its tab (going
+--- back to the tab the diff was opened from when the loading tab is current).
+--- @param state table Diff state
 --- @param close_tab boolean
-local function cancel_loading(close_tab)
-    local record = loading
+local function cancel_loading(state, close_tab)
+    local record = state.loading
     if not record then
         return
     end
-    loading = nil
+    state.loading = nil
     record.closed = true
     if record.job then
         record.job:cancel()
     end
-    pcall(vim.api.nvim_del_augroup_by_id, record.group)
+    delete_autocmds(record)
     if record.win and vim.api.nvim_win_is_valid(record.win) then
         vim.api.nvim_win_close(record.win, true)
     end
@@ -621,9 +637,38 @@ local function cancel_loading(close_tab)
     end
 end
 
+--- Forget a diff: stop its computation and delete its autocmds. Its tab is left
+--- alone.
+--- @param state table Diff state
+local function drop(state)
+    cancel_loading(state, false)
+    delete_autocmds(state)
+    if diffs[state.diff_tabpage] == state then
+        diffs[state.diff_tabpage] = nil
+    end
+end
+
+-- A diff tab closed by other means than closing the diff (:tabclose, :tabonly):
+-- forget its diff. The closed tab's handle is still valid while TabClosed runs.
+vim.api.nvim_create_autocmd("TabClosed", {
+    group = vim.api.nvim_create_augroup("DifftTabs", { clear = true }),
+    callback = function()
+        vim.schedule(function()
+            for tab, state in pairs(diffs) do
+                if not vim.api.nvim_tabpage_is_valid(tab) then
+                    drop(state)
+                end
+            end
+        end)
+    end,
+})
+
 --- Leave the tab opened for a diff that has nothing to show, back to the tab the
 --- diff was opened from.
-local function leave_diff_tab(original_tabpage, diff_tabpage)
+--- @param state table Diff state
+local function leave_diff_tab(state)
+    drop(state)
+    local original_tabpage, diff_tabpage = state.original_tabpage, state.diff_tabpage
     if vim.api.nvim_get_current_tabpage() == diff_tabpage and vim.api.nvim_tabpage_is_valid(original_tabpage) then
         vim.api.nvim_set_current_tabpage(original_tabpage)
     end
@@ -633,29 +678,17 @@ local function leave_diff_tab(original_tabpage, diff_tabpage)
 end
 
 --- Build the diff view for computed files in the current tab, the diff tab.
-local function present(files, revset, original_tabpage, diff_tabpage)
-    M.state.files = files
-    M.state.current_file_idx = 1
-    -- Per-view tracking; also reset when the previous view was closed with :tabclose.
-    M.state.positions = {}
-    M.state.shown_path = nil
-    M.state.pane_side = nil
-    M.state.fold_ranges = {}
-    M.state.fold_states = {}
-    M.state.saved_fold_options = {}
-    M.state.visited = {}
-    M.state.reviewed = {}
-    M.state.range_kind, M.state.range_label = range_context(revset, M.config.vcs)
+--- @param state table Diff state of the tab
+local function present(state, files, revset)
+    state.files = files
+    state.current_file_idx = 1
+    state.range_kind, state.range_label = range_context(revset, M.config.vcs)
 
-    M.state.original_tabpage = original_tabpage
-    M.state.diff_tabpage = diff_tabpage
-
-    tree.open(M.state)
-    diff.open(M.state)
-    keymaps.setup(M.state)
+    tree.open(state)
+    diff.open(state)
+    keymaps.setup(state)
 
     -- Remember the diff pane used last, so focus can return to it from the tree.
-    local state = M.state
     local function track_pane()
         if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
             return true -- diff view closed: drop this autocmd
@@ -667,31 +700,28 @@ local function present(files, revset, original_tabpage, diff_tabpage)
             state.pane_side = "head"
         end
     end
-    local group = vim.api.nvim_create_augroup("DifftPaneSide", { clear = true })
-    vim.api.nvim_create_autocmd("WinEnter", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSide", "WinEnter", {
         callback = function()
             if track_pane() then
                 return true
             end
-            record_position()
+            record_position(state)
         end,
     })
     -- Keep the shown file's position current, not only when the file is left.
-    vim.api.nvim_create_autocmd("CursorMoved", {
-        group = group,
+    M.diff_autocmd(state, "DifftPaneSide", "CursorMoved", {
         callback = function()
             if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
                 return true -- diff view closed: drop this autocmd
             end
             local win = vim.api.nvim_get_current_win()
             if win == state.left_win or win == state.right_win then
-                record_position()
+                record_position(state)
             end
         end,
     })
 
-    local first_idx = tree.first_file_in_display_order()
+    local first_idx = tree.first_file_in_display_order(state)
     if first_idx then
         M.show_file(first_idx)
     end
@@ -705,8 +735,9 @@ end
 --- progress, and the view is built in the diff tab once the result arrives (on
 --- entering that tab, if another tab is current then). Closing the tab, closing
 --- the view, opening another diff or quitting Neovim cancels the computation.
-local function open_async(lib, revset, original_tabpage, diff_tabpage)
-    local record = { tab = diff_tabpage, original_tab = original_tabpage, closed = false }
+--- @param state table Diff state of the new tab
+local function open_async(lib, revset, state)
+    local record = { tab = state.diff_tabpage, original_tab = state.original_tabpage, closed = false }
     record.box = show_progress_box(range_context(revset, M.config.vcs))
     record.win = record.box.win
     -- The close key works in the loading tab as in the view: it cancels the diff.
@@ -715,16 +746,15 @@ local function open_async(lib, revset, original_tabpage, diff_tabpage)
             M.close()
         end, { buffer = vim.api.nvim_get_current_buf(), nowait = true, desc = "Cancel loading the diff" })
     end
-    loading = record
+    state.loading = record
 
     local function stale()
-        return loading ~= record or record.closed or not vim.api.nvim_tabpage_is_valid(record.tab)
+        return state.loading ~= record or record.closed or not vim.api.nvim_tabpage_is_valid(record.tab)
     end
 
     local function finish(result, err)
         if err or not result.files or #result.files == 0 then
-            cancel_loading(false)
-            leave_diff_tab(original_tabpage, diff_tabpage)
+            leave_diff_tab(state)
             if err then
                 vim.notify("difftastic-nvim: " .. err, vim.log.levels.ERROR)
             else
@@ -736,21 +766,20 @@ local function open_async(lib, revset, original_tabpage, diff_tabpage)
             if stale() then
                 return
             end
-            loading = nil
-            pcall(vim.api.nvim_del_augroup_by_id, record.group)
+            state.loading = nil
+            delete_autocmds(record)
             if vim.api.nvim_win_is_valid(record.win) then
                 vim.api.nvim_win_close(record.win, true)
             end
-            present(result.files, revset, original_tabpage, diff_tabpage)
+            present(state, result.files, revset)
         end
-        if vim.api.nvim_get_current_tabpage() == diff_tabpage then
+        if vim.api.nvim_get_current_tabpage() == record.tab then
             build()
         else
             -- Windows are laid out in the current tab: wait until the diff tab is.
-            vim.api.nvim_create_autocmd("TabEnter", {
-                group = record.group,
+            M.diff_autocmd(record, "DifftLoading", "TabEnter", {
                 callback = function()
-                    if vim.api.nvim_get_current_tabpage() == diff_tabpage then
+                    if vim.api.nvim_get_current_tabpage() == record.tab then
                         build()
                         return true
                     end
@@ -759,20 +788,7 @@ local function open_async(lib, revset, original_tabpage, diff_tabpage)
         end
     end
 
-    record.group = vim.api.nvim_create_augroup("DifftLoading", { clear = true })
-    vim.api.nvim_create_autocmd("TabClosed", {
-        group = record.group,
-        callback = function()
-            -- The closed tab's handle is still valid while TabClosed runs.
-            vim.schedule(function()
-                if loading == record and not vim.api.nvim_tabpage_is_valid(record.tab) then
-                    cancel_loading(false)
-                end
-            end)
-        end,
-    })
-    vim.api.nvim_create_autocmd("VimResized", {
-        group = record.group,
+    M.diff_autocmd(record, "DifftLoading", "VimResized", {
         callback = function()
             if vim.api.nvim_win_is_valid(record.win) then
                 center_loading(record.win, record.box.width, 2)
@@ -780,10 +796,9 @@ local function open_async(lib, revset, original_tabpage, diff_tabpage)
             end
         end,
     })
-    vim.api.nvim_create_autocmd("VimLeavePre", {
-        group = record.group,
+    M.diff_autocmd(record, "DifftLoading", "VimLeavePre", {
         callback = function()
-            cancel_loading(false)
+            cancel_loading(state, false)
         end,
     })
 
@@ -806,8 +821,7 @@ local function open_async(lib, revset, original_tabpage, diff_tabpage)
         end
     end)
     if not ok then
-        cancel_loading(false)
-        leave_diff_tab(original_tabpage, diff_tabpage)
+        leave_diff_tab(state)
         error(job, 0)
     end
     record.job = job
@@ -817,24 +831,26 @@ end
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
 function M.open(revset)
-    if M.state.tree_win or M.state.left_win or M.state.right_win then
-        M.close()
+    -- One diff at a time: a new one replaces the one open (or still loading).
+    for _, state in pairs(diffs) do
+        M.close(state)
     end
-    cancel_loading(true)
     -- The theme may have changed without a ColorScheme event since setup().
     highlight.refresh()
 
     -- Show the new tab with a loading message while the diff is computed.
-    local original_tabpage = vim.api.nvim_get_current_tabpage()
+    local state = new_state()
+    state.original_tabpage = vim.api.nvim_get_current_tabpage()
     vim.cmd("tabnew")
-    local diff_tabpage = vim.api.nvim_get_current_tabpage()
+    state.diff_tabpage = vim.api.nvim_get_current_tabpage()
+    diffs[state.diff_tabpage] = state
     -- Let Neovim handle input still queued, such as a terminal resize reported while
     -- it started up, so the message is centred on the current screen size.
     vim.wait(0)
 
     local ok_lib, lib = pcall(binary.get)
     if ok_lib and type(lib) == "table" and lib.run_diff_async and lib.poll then
-        return open_async(lib, revset, original_tabpage, diff_tabpage)
+        return open_async(lib, revset, state)
     end
 
     -- A library without asynchronous diffs: compute the diff here, blocking.
@@ -857,7 +873,7 @@ function M.open(revset)
     end
     if not ok or not result.files or #result.files == 0 then
         -- Nothing to show: leave the loading tab.
-        leave_diff_tab(original_tabpage, diff_tabpage)
+        leave_diff_tab(state)
         if not ok then
             error(result, 0)
         end
@@ -865,85 +881,62 @@ function M.open(revset)
         return
     end
 
-    present(result.files, revset, original_tabpage, diff_tabpage)
+    present(state, result.files, revset)
 end
 
---- Close the diff view.
-function M.close()
+--- Close a diff view: the current tab's, else the one open.
+--- @param state table|nil Diff state to close (internal)
+function M.close(state)
+    state = state or diffs[vim.api.nvim_get_current_tabpage()] or select(2, next(diffs))
+    if not state then
+        return
+    end
     -- A diff still being computed: stop it and close its tab.
-    cancel_loading(true)
-    local diff_tabpage = M.state.diff_tabpage
-    local original_tabpage = M.state.original_tabpage
+    cancel_loading(state, true)
     -- Settle the state before it is dropped: a fold change still in one pane.
-    fold.sync(M.state)
-
+    fold.sync(state)
     -- Drop the view's autocmds now rather than when their events next fire.
-    pcall(vim.api.nvim_del_augroup_by_name, "DifftTreeResize")
-    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSide")
-    pcall(vim.api.nvim_del_augroup_by_name, "DifftPaneSync")
-
-    -- Reset state first
-    M.state = {
-        current_file_idx = 1,
-        files = {},
-        range_label = nil,
-        range_kind = nil,
-        tree_win = nil,
-        tree_buf = nil,
-        left_win = nil,
-        left_buf = nil,
-        right_win = nil,
-        right_buf = nil,
-        original_tabpage = nil,
-        diff_tabpage = nil,
-        pane_side = nil,
-        positions = {},
-        shown_path = nil,
-        fold_ranges = {},
-        fold_closed = nil,
-        fold_states = {},
-        saved_fold_options = {},
-        visited = {},
-        reviewed = {},
-    }
+    drop(state)
 
     -- Switch to original tabpage if valid
-    if original_tabpage and vim.api.nvim_tabpage_is_valid(original_tabpage) then
+    local diff_tabpage, original_tabpage = state.diff_tabpage, state.original_tabpage
+    if vim.api.nvim_get_current_tabpage() == diff_tabpage and original_tabpage and vim.api.nvim_tabpage_is_valid(original_tabpage) then
         vim.api.nvim_set_current_tabpage(original_tabpage)
     end
 
     -- Close the diff tabpage
     if diff_tabpage and vim.api.nvim_tabpage_is_valid(diff_tabpage) then
-        local tabnr = vim.api.nvim_tabpage_get_number(diff_tabpage)
-        vim.cmd("tabclose " .. tabnr)
+        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(diff_tabpage))
     end
 end
 
 --- Remember the cursor position in the shown file: line, column and the diff pane
 --- used last.
-function record_position()
-    local path = M.state.shown_path
+--- @param state table Diff state
+function record_position(state)
+    local path = state.shown_path
     if not path then
         return
     end
-    local side = M.state.pane_side or "head"
-    local pane = side == "head" and M.state.right_win or M.state.left_win
+    local side = state.pane_side or "head"
+    local pane = side == "head" and state.right_win or state.left_win
     if not (pane and vim.api.nvim_win_is_valid(pane)) then
         return
     end
     local cursor = vim.api.nvim_win_get_cursor(pane)
-    M.state.positions[path] = { line = cursor[1], col = cursor[2], side = side }
+    state.positions[path] = { line = cursor[1], col = cursor[2], side = side }
 end
 
 --- Put the cursor at a position in the shown file: line, column and diff pane. Both
 --- panes go to the line, as their rows are aligned. When a diff pane has focus,
 --- focus moves to the given pane.
+--- @param state table Diff state
 --- @param pos table `{ line, col, side }`
-local function restore_position(pos)
+local function restore_position(state, pos)
     local head = pos.side == "head"
-    local pane = head and M.state.right_win or M.state.left_win
-    local partner = head and M.state.left_win or M.state.right_win
-    local buf = head and M.state.right_buf or M.state.left_buf
+    local pane = head and state.right_win or state.left_win
+    local partner = head and state.left_win or state.right_win
+    local buf = head and state.right_buf or state.left_buf
     if not (pane and vim.api.nvim_win_is_valid(pane)) then
         return
     end
@@ -954,9 +947,9 @@ local function restore_position(pos)
         local partner_buf = vim.api.nvim_win_get_buf(partner)
         vim.api.nvim_win_set_cursor(partner, { math.min(line, vim.api.nvim_buf_line_count(partner_buf)), pos.col })
     end
-    M.state.pane_side = pos.side
+    state.pane_side = pos.side
     local current = vim.api.nvim_get_current_win()
-    if current == M.state.left_win or current == M.state.right_win then
+    if current == state.left_win or current == state.right_win then
         vim.api.nvim_set_current_win(pane)
     end
 end
@@ -965,34 +958,36 @@ end
 --- files in the directory under it (marking them all unless all are marked);
 --- elsewhere, of the shown file.
 function M.toggle_reviewed()
+    local state = M.state
     local paths = {}
-    if vim.api.nvim_get_current_win() == M.state.tree_win and tree.tree then
-        local node = tree.tree:get_node()
+    if vim.api.nvim_get_current_win() == state.tree_win and state.tree then
+        local node = state.tree:get_node()
         if node then
-            paths = tree.file_paths(node, M.state)
+            paths = tree.file_paths(node, state)
         end
-    elseif M.state.shown_path then
-        paths = { M.state.shown_path }
+    elseif state.shown_path then
+        paths = { state.shown_path }
     end
     if #paths == 0 then
         return
     end
     local all_reviewed = true
     for _, path in ipairs(paths) do
-        all_reviewed = all_reviewed and M.state.reviewed[path] == true
+        all_reviewed = all_reviewed and state.reviewed[path] == true
     end
     for _, path in ipairs(paths) do
-        M.state.reviewed[path] = not all_reviewed or nil
+        state.reviewed[path] = not all_reviewed or nil
     end
-    tree.refresh_header(M.state)
-    tree.refresh_rows(M.state)
+    tree.refresh_header(state)
+    tree.refresh_rows(state)
 end
 
 --- Show the next (direction 1) or previous (-1) file not marked as reviewed, in
 --- tree order and wrapping around; collapsed directories around it are opened.
 local function step_unreviewed(direction)
-    local order = tree.all_files_in_order()
-    local current = M.state.current_file_idx
+    local state = M.state
+    local order = tree.all_files_in_order(state)
+    local current = state.current_file_idx
     local pos = 0
     for i, idx in ipairs(order) do
         if idx == current then
@@ -1001,9 +996,9 @@ local function step_unreviewed(direction)
     end
     for step = 1, #order do
         local idx = order[(pos - 1 + direction * step) % #order + 1]
-        local file = M.state.files[idx]
-        if idx ~= current and file and not M.state.reviewed[file.path] then
-            tree.reveal_file(idx)
+        local file = state.files[idx]
+        if idx ~= current and file and not state.reviewed[file.path] then
+            tree.reveal_file(state, idx)
             M.show_file(idx)
             return
         end
@@ -1023,7 +1018,8 @@ end
 
 --- Move focus to the diff pane used last; the head (right) pane at first.
 function M.focus_diff()
-    local win = M.state.pane_side == "base" and M.state.left_win or M.state.right_win
+    local state = M.state
+    local win = state.pane_side == "base" and state.left_win or state.right_win
     if win and vim.api.nvim_win_is_valid(win) then
         vim.api.nvim_set_current_win(win)
     end
@@ -1031,21 +1027,23 @@ end
 
 --- Give the two diff panes the same width, leaving the tree alone.
 function M.equalize_panes()
-    local left, right = M.state.left_win, M.state.right_win
+    local state = M.state
+    local left, right = state.left_win, state.right_win
     if not (left and right and vim.api.nvim_win_is_valid(left) and vim.api.nvim_win_is_valid(right)) then
         return
     end
     local total = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
     -- An exact half, kept for later resizes (see setup_pane_sync).
-    M.state.pane_ratio = 0.5
+    state.pane_ratio = 0.5
     vim.api.nvim_win_set_width(left, math.floor(total / 2))
-    M.state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
+    state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
 end
 
 --- Give the side panel its configured width (tree.width); the diff panes keep
 --- their ratio.
 function M.reset_tree_width()
-    local tree_win = M.state.tree_win
+    local state = M.state
+    local tree_win = state.tree_win
     if tree_win and vim.api.nvim_win_is_valid(tree_win) then
         vim.api.nvim_win_set_width(tree_win, M.config.tree.width)
     end
@@ -1056,6 +1054,7 @@ end
 --- The action runs on the next tick.
 --- @return boolean handled True when the last mouse event was on one of them
 function M.split_double_click()
+    local state = M.state
     local mouse = vim.fn.getmousepos()
     -- A separator belongs to the window on its left, one column past its width.
     local function on_right_border(win)
@@ -1065,11 +1064,11 @@ function M.split_double_click()
             and mouse.line == 0
             and mouse.wincol == vim.api.nvim_win_get_width(win) + 1
     end
-    if on_right_border(M.state.left_win) then
+    if on_right_border(state.left_win) then
         vim.schedule(M.equalize_panes)
         return true
     end
-    if on_right_border(M.state.tree_win) then
+    if on_right_border(state.tree_win) then
         vim.schedule(M.reset_tree_width)
         return true
     end
@@ -1081,73 +1080,77 @@ end
 --- or the top.
 --- @param idx number File index (1-based)
 function M.show_file(idx)
-    if idx < 1 or idx > #M.state.files then
+    local state = M.state
+    if idx < 1 or idx > #state.files then
         return
     end
     -- Settle the file being left: a fold change still in one pane, the cursor.
-    fold.sync(M.state)
-    record_position()
-    M.state.current_file_idx = idx
-    local file = M.state.files[idx]
-    diff.render(M.state, file)
-    M.state.shown_path = file.path
-    M.state.visited[file.path] = true
-    if M.config.auto_review and not M.state.reviewed[file.path] then
-        M.state.reviewed[file.path] = true
-        tree.refresh_header(M.state)
+    fold.sync(state)
+    record_position(state)
+    state.current_file_idx = idx
+    local file = state.files[idx]
+    diff.render(state, file)
+    state.shown_path = file.path
+    state.visited[file.path] = true
+    if M.config.auto_review and not state.reviewed[file.path] then
+        state.reviewed[file.path] = true
+        tree.refresh_header(state)
     end
-    local folds_restored = fold.render(M.state, file, M.state.fold_states[file.path])
-    local pos = M.state.positions[file.path]
+    local folds_restored = fold.render(state, file, state.fold_states[file.path])
+    local pos = state.positions[file.path]
     if not pos then
         -- A file not shown before opens at its first hunk (or its top) in the pane
         -- in use, which is also where <Tab> from the tree goes.
-        local first = M.config.scroll_to_first_hunk and diff.hunk_positions[1] or 1
-        pos = { line = first, col = 0, side = M.state.pane_side or "head" }
+        local first = M.config.scroll_to_first_hunk and state.hunk_positions[1] or 1
+        pos = { line = first, col = 0, side = state.pane_side or "head" }
     elseif not folds_restored then
         -- The folds were rebuilt with their default states (their layout changed),
         -- so the remembered line may now be hidden: open the fold over it.
-        fold.reveal(M.state, pos.line)
+        fold.reveal(state, pos.line)
     end
-    restore_position(pos)
+    restore_position(state, pos)
     -- The review marker of the shown file may have changed.
-    tree.refresh_rows(M.state)
-    tree.highlight_current(M.state)
+    tree.refresh_rows(state)
+    tree.highlight_current(state)
 end
 
 --- Show a file and jump to a specific hunk after rendering completes.
 --- @param idx number File index to show
 --- @param hunk_fn function Hunk function to call (e.g., diff.first_hunk or diff.last_hunk)
 local function show_file_and_jump_to_hunk(idx, hunk_fn)
+    local state = M.state
     M.show_file(idx)
     vim.schedule(function()
-        hunk_fn(M.state)
+        hunk_fn(state)
     end)
 end
 
 --- Navigate to the next file.
 function M.next_file()
-    local next_idx = tree.next_file_in_display_order(M.state.current_file_idx)
+    local state = M.state
+    local next_idx = tree.next_file_in_display_order(state, state.current_file_idx)
     if next_idx then
         M.show_file(next_idx)
         return
     end
 
-    local first_idx = tree.first_file_in_display_order()
-    if first_idx and first_idx ~= M.state.current_file_idx then
+    local first_idx = tree.first_file_in_display_order(state)
+    if first_idx and first_idx ~= state.current_file_idx then
         M.show_file(first_idx)
     end
 end
 
 --- Navigate to the previous file.
 function M.prev_file()
-    local prev_idx = tree.prev_file_in_display_order(M.state.current_file_idx)
+    local state = M.state
+    local prev_idx = tree.prev_file_in_display_order(state, state.current_file_idx)
     if prev_idx then
         M.show_file(prev_idx)
         return
     end
 
-    local last_idx = tree.last_file_in_display_order()
-    if last_idx and last_idx ~= M.state.current_file_idx then
+    local last_idx = tree.last_file_in_display_order(state)
+    if last_idx and last_idx ~= state.current_file_idx then
         M.show_file(last_idx)
     end
 end
@@ -1156,22 +1159,23 @@ end
 --- If hunk_wrap_file is enabled and at the last hunk, wraps to the first hunk of the next file.
 --- Otherwise, wraps to the first hunk of the current file.
 function M.next_hunk()
-    local jumped = diff.next_hunk(M.state)
+    local state = M.state
+    local jumped = diff.next_hunk(state)
     if not jumped then
         if M.config.hunk_wrap_file then
-            local next_idx = tree.next_file_in_display_order(M.state.current_file_idx)
+            local next_idx = tree.next_file_in_display_order(state, state.current_file_idx)
             if next_idx then
                 show_file_and_jump_to_hunk(next_idx, diff.first_hunk)
             else
                 -- At last file, wrap to first file
-                local first_idx = tree.first_file_in_display_order()
-                if first_idx and first_idx ~= M.state.current_file_idx then
+                local first_idx = tree.first_file_in_display_order(state)
+                if first_idx and first_idx ~= state.current_file_idx then
                     show_file_and_jump_to_hunk(first_idx, diff.first_hunk)
                 end
             end
         else
             -- Wrap within current file
-            diff.first_hunk(M.state)
+            diff.first_hunk(state)
         end
     end
     vim.cmd("normal! zz")
@@ -1181,22 +1185,23 @@ end
 --- If hunk_wrap_file is enabled and at the first hunk, wraps to the last hunk of the previous file.
 --- Otherwise, wraps to the last hunk of the current file.
 function M.prev_hunk()
-    local jumped = diff.prev_hunk(M.state)
+    local state = M.state
+    local jumped = diff.prev_hunk(state)
     if not jumped then
         if M.config.hunk_wrap_file then
-            local prev_idx = tree.prev_file_in_display_order(M.state.current_file_idx)
+            local prev_idx = tree.prev_file_in_display_order(state, state.current_file_idx)
             if prev_idx then
                 show_file_and_jump_to_hunk(prev_idx, diff.last_hunk)
             else
                 -- At first file, wrap to last file
-                local last_idx = tree.last_file_in_display_order()
-                if last_idx and last_idx ~= M.state.current_file_idx then
+                local last_idx = tree.last_file_in_display_order(state)
+                if last_idx and last_idx ~= state.current_file_idx then
                     show_file_and_jump_to_hunk(last_idx, diff.last_hunk)
                 end
             end
         else
             -- Wrap within current file
-            diff.last_hunk(M.state)
+            diff.last_hunk(state)
         end
     end
     vim.cmd("normal! zz")

@@ -18,18 +18,10 @@ local GLYPHS = {
     renamed = "➜",
 }
 
---- Module state
---- @type table|nil
-M.tree = nil
---- @type number|nil
-M.current_file_idx = nil
---- Display width tree rows are cut to; nil leaves them whole.
---- @type number|nil
-M.row_width = nil
---- @type number
-M.total_additions = 0
---- @type number
-M.total_deletions = 0
+-- Each diff keeps its panel in its state: `tree` (the NuiTree), `tree_row_width`
+-- (display width rows are cut to; nil leaves them whole), `tree_header_width`
+-- and the totals `total_additions` / `total_deletions`.
+
 --- Number of header lines (title + summary + range + divider)
 M.header_lines = 4
 
@@ -304,8 +296,7 @@ end
 
 --- Review marker of a row: reviewed, not shown yet in this view, or none (blank).
 --- @return string glyph, string highlight
-local function review_marker(node, cfg)
-    local state = require("difftastic-nvim").state
+local function review_marker(node, cfg, state)
     if node.is_dir then
         -- A directory is reviewed once every file in it is.
         local paths = M.file_paths(node, state)
@@ -332,7 +323,7 @@ local function review_marker(node, cfg)
     return " ", "DifftTreeMuted"
 end
 
-local function prepare_node(node)
+local function prepare_node(node, state)
     local cfg = get_config()
     local line = NuiLine()
     local depth = node:get_depth()
@@ -374,11 +365,11 @@ local function prepare_node(node)
 
     -- The review marker takes a column of its own at the right edge: the row is
     -- cut and padded to end just before it, so the text never overlaps it.
-    local marker, marker_hl = review_marker(node, cfg)
+    local marker, marker_hl = review_marker(node, cfg, state)
     local column = math.max(display_width(cfg.icons.unvisited), display_width(cfg.icons.reviewed))
-    if M.row_width then
-        line = fit_row(line, M.row_width - column - 1)
-        local pad = M.row_width - column - 1 - line:width()
+    if state.tree_row_width then
+        line = fit_row(line, state.tree_row_width - column - 1)
+        local pad = state.tree_row_width - column - 1 - line:width()
         if pad > 0 then
             line:append(string.rep(" ", pad), "DifftTreeMuted")
         end
@@ -451,7 +442,7 @@ local function render_header(state, total_add, total_del, replace_lines)
     local bottom_line = "╰" .. string.rep("─", math.max(0, width - 2)) .. "╯"
 
     vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, { top_line, stats_line, range_line, bottom_line })
-    M.header_width = width
+    state.tree_header_width = width
 
     local title_start = top_line:find("Difftastic", 1, true)
     if title_start then
@@ -524,8 +515,8 @@ function M.open(state)
     sort_node(root)
 
     -- Store totals for header
-    M.total_additions = root.additions
-    M.total_deletions = root.deletions
+    state.total_additions = root.additions
+    state.total_deletions = root.deletions
 
     -- Convert to nui nodes
     local nui_nodes = convert_to_nui_nodes(root)
@@ -534,23 +525,24 @@ function M.open(state)
     render_header(state, root.additions, root.deletions)
 
     -- Create nui tree (starts after header)
-    M.tree = NuiTree({
+    state.tree = NuiTree({
         bufnr = state.tree_buf,
         nodes = nui_nodes,
-        prepare_node = prepare_node,
+        prepare_node = function(node)
+            return prepare_node(node, state)
+        end,
     })
 
-    M.row_width = M.text_width(state.tree_win)
-    M.tree:render(M.header_lines + 1)
+    state.tree_row_width = M.text_width(state.tree_win)
+    state.tree:render(M.header_lines + 1)
 
     -- Redraw the header box and the rows when the tree window changes width.
-    vim.api.nvim_create_autocmd("WinResized", {
-        group = vim.api.nvim_create_augroup("DifftTreeResize", { clear = true }),
+    require("difftastic-nvim").diff_autocmd(state, "DifftTreeResize", "WinResized", {
         callback = function()
             if not (state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
                 return true -- diff view closed: drop this autocmd
             end
-            if M.text_width(state.tree_win) ~= M.header_width then
+            if M.text_width(state.tree_win) ~= state.tree_header_width then
                 M.refresh_header(state)
                 M.refresh_rows(state)
             end
@@ -562,7 +554,7 @@ function M.open(state)
     local keys = difft.config.keymaps
 
     local function select()
-        local node = M.tree:get_node()
+        local node = state.tree:get_node()
         if not node then return end
 
         if node.file_idx then
@@ -576,7 +568,7 @@ function M.open(state)
             else
                 node:expand()
             end
-            M.tree:render()
+            state.tree:render()
         end
     end
     vim.keymap.set("n", keys.select, select, { buffer = state.tree_buf })
@@ -599,8 +591,8 @@ function M.open(state)
 end
 
 function M.render(state)
-    if M.tree then
-        M.tree:render()
+    if state.tree then
+        state.tree:render()
     end
 end
 
@@ -614,7 +606,7 @@ function M.refresh_header(state)
     local buf = vim.bo[state.tree_buf]
     local modifiable, readonly = buf.modifiable, buf.readonly
     buf.modifiable, buf.readonly = true, false
-    render_header(state, M.total_additions or 0, M.total_deletions or 0, M.header_lines)
+    render_header(state, state.total_additions or 0, state.total_deletions or 0, M.header_lines)
     buf.modifiable, buf.readonly = modifiable, readonly
 end
 
@@ -632,7 +624,7 @@ function M.file_paths(node, state)
             end
         end
         for _, id in ipairs(n:get_child_ids() or {}) do
-            local child = M.tree:get_node(id)
+            local child = state.tree:get_node(id)
             if child then
                 walk(child)
             end
@@ -646,25 +638,26 @@ end
 --- and the current-file highlight.
 --- @param state table Plugin state
 function M.refresh_rows(state)
-    if not (M.tree and state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
+    if not (state.tree and state.tree_win and vim.api.nvim_win_is_valid(state.tree_win)) then
         return
     end
-    M.row_width = M.text_width(state.tree_win)
+    state.tree_row_width = M.text_width(state.tree_win)
     local cursor = vim.api.nvim_win_get_cursor(state.tree_win)
-    M.tree:render()
+    state.tree:render()
     M.highlight_current(state)
     vim.api.nvim_win_set_cursor(state.tree_win, cursor)
 end
 
 --- File indices of every file in tree order, inside collapsed directories too.
+--- @param state table Diff state
 --- @return number[]
-function M.all_files_in_order()
+function M.all_files_in_order(state)
     local files = {}
-    if not M.tree then
+    if not state.tree then
         return files
     end
     local function walk(parent_id)
-        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+        for _, node in ipairs(state.tree:get_nodes(parent_id)) do
             if node.file_idx then
                 table.insert(files, node.file_idx)
             end
@@ -678,14 +671,15 @@ function M.all_files_in_order()
 end
 
 --- Expand the directories around a file, so its row is visible.
+--- @param state table Diff state
 --- @param file_idx number
-function M.reveal_file(file_idx)
-    if not M.tree then
+function M.reveal_file(state, file_idx)
+    if not state.tree then
         return
     end
     local changed = false
     local function walk(parent_id)
-        for _, node in ipairs(M.tree:get_nodes(parent_id)) do
+        for _, node in ipairs(state.tree:get_nodes(parent_id)) do
             if node.file_idx == file_idx then
                 return true
             end
@@ -701,7 +695,7 @@ function M.reveal_file(file_idx)
     end
     walk(nil)
     if changed then
-        M.tree:render()
+        state.tree:render()
     end
 end
 
@@ -724,9 +718,9 @@ local function collect_visible_files(tree)
     return files
 end
 
-function M.next_file_in_display_order(current_idx)
-    if not M.tree then return nil end
-    local files = collect_visible_files(M.tree)
+function M.next_file_in_display_order(state, current_idx)
+    if not state.tree then return nil end
+    local files = collect_visible_files(state.tree)
     for i, idx in ipairs(files) do
         if idx == current_idx and files[i + 1] then
             return files[i + 1]
@@ -735,9 +729,9 @@ function M.next_file_in_display_order(current_idx)
     return nil
 end
 
-function M.prev_file_in_display_order(current_idx)
-    if not M.tree then return nil end
-    local files = collect_visible_files(M.tree)
+function M.prev_file_in_display_order(state, current_idx)
+    if not state.tree then return nil end
+    local files = collect_visible_files(state.tree)
     for i, idx in ipairs(files) do
         if idx == current_idx and i > 1 then
             return files[i - 1]
@@ -746,30 +740,28 @@ function M.prev_file_in_display_order(current_idx)
     return nil
 end
 
-function M.first_file_in_display_order()
-    if not M.tree then return nil end
-    local files = collect_visible_files(M.tree)
+function M.first_file_in_display_order(state)
+    if not state.tree then return nil end
+    local files = collect_visible_files(state.tree)
     return files[1]
 end
 
-function M.last_file_in_display_order()
-    if not M.tree then return nil end
-    local files = collect_visible_files(M.tree)
+function M.last_file_in_display_order(state)
+    if not state.tree then return nil end
+    local files = collect_visible_files(state.tree)
     return files[#files]
 end
 
 function M.highlight_current(state)
-    if not M.tree or not state.tree_buf then return end
+    if not state.tree or not state.tree_buf then return end
 
     local ns = vim.api.nvim_create_namespace("difft-tree-current")
     vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, M.header_lines, -1)
 
-    M.current_file_idx = state.current_file_idx
-
     -- Find the line number by iterating through rendered lines (after header)
     local line_count = vim.api.nvim_buf_line_count(state.tree_buf)
     for linenr = M.header_lines + 1, line_count do
-        local node = M.tree:get_node(linenr)
+        local node = state.tree:get_node(linenr)
         if node and node.file_idx == state.current_file_idx then
             vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeCurrent", linenr - 1, 0, -1)
             if vim.api.nvim_win_is_valid(state.tree_win) then

@@ -54,7 +54,7 @@ describe("review markers", function()
     local function row(match)
         local buf = difft.state.tree_buf
         for linenr = 1, vim.api.nvim_buf_line_count(buf) do
-            local node = tree.tree:get_node(linenr)
+            local node = difft.state.tree:get_node(linenr)
             if node and match(node) then
                 return linenr, vim.api.nvim_buf_get_lines(buf, linenr - 1, linenr, false)[1]
             end
@@ -384,15 +384,15 @@ describe("review markers", function()
         it("opens a collapsed directory around the file it goes to", function()
             difft.open("HEAD")
             show("a.txt")
-            local node = tree.tree:get_node((dir_row("dir")))
+            local node = difft.state.tree:get_node((dir_row("dir")))
             node:collapse()
-            tree.tree:render()
+            difft.state.tree:render()
             vim.api.nvim_set_current_win(difft.state.right_win)
 
             press("[u")
 
             assert.are.equal("dir/c.txt", shown())
-            assert.is_true(tree.tree:get_node((dir_row("dir"))):is_expanded())
+            assert.is_true(difft.state.tree:get_node((dir_row("dir"))):is_expanded())
             local ns = vim.api.nvim_create_namespace("difft-tree-current")
             local marks = vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, ns, 0, -1, {})
             assert.are.equal(file_row("dir/c.txt") - 1, marks[1][2])

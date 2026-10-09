@@ -396,7 +396,7 @@ describe("per-file cursor positions", function()
         show("b.txt")
         vim.api.nvim_win_set_cursor(difft.state.left_win, { 2, 0 })
         show("a.txt")
-        local target = difft.state.files[require("difftastic-nvim.tree").next_file_in_display_order(difft.state.current_file_idx)]
+        local target = difft.state.files[require("difftastic-nvim.tree").next_file_in_display_order(difft.state, difft.state.current_file_idx)]
         assert.are.equal("b.txt", target.path)
         vim.api.nvim_win_set_cursor(difft.state.left_win, { 11, 0 }) -- on a.txt's only hunk
 
@@ -454,7 +454,7 @@ describe("focus_diff_on_select", function()
         vim.api.nvim_set_current_win(difft.state.tree_win)
         local count = vim.api.nvim_buf_line_count(difft.state.tree_buf)
         for linenr = 1, count do
-            local node = tree.tree:get_node(linenr)
+            local node = difft.state.tree:get_node(linenr)
             if node and match(node) then
                 vim.api.nvim_win_set_cursor(difft.state.tree_win, { linenr, 0 })
                 vim.api.nvim_feedkeys(vim.keycode(difft.config.keymaps.select), "x", false)
@@ -788,11 +788,12 @@ describe("pane sync", function()
 
         it("applies a resize made in another tab when the diff tab is entered", function()
             local before = widths()
+            local diff_tab = remote("return vim.api.nvim_get_current_tabpage()")
             remote("vim.cmd('tabnew')")
             settle()
 
             set_columns(260)
-            remote("vim.api.nvim_set_current_tabpage(require('difftastic-nvim').state.diff_tabpage)")
+            remote("vim.api.nvim_set_current_tabpage(...)", diff_tab)
             settle()
 
             local w = widths()
@@ -874,7 +875,7 @@ describe("double click in the tree", function()
             local tree = require("difftastic-nvim.tree")
             local pos = vim.api.nvim_win_get_position(s.tree_win)
             for linenr = 1, vim.api.nvim_buf_line_count(s.tree_buf) do
-                local node = tree.tree:get_node(linenr)
+                local node = s.tree:get_node(linenr)
                 if node and node.file_idx and s.files[node.file_idx].path == path then
                     for _ = 1, 2 do
                         vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + linenr - 1, pos[2] + 4)

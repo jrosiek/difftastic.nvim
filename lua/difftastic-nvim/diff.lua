@@ -26,10 +26,6 @@ local function ensure_treesitter(buf, ft)
     pcall(vim.treesitter.start, buf, ft)
 end
 
---- Line positions where hunks start (1-indexed)
---- @type number[]
-M.hunk_positions = {}
-
 --- Maps difftastic language names to Vim filetypes
 local FILETYPES = {
     Rust = "rust",
@@ -188,9 +184,10 @@ function M.render(state, file)
     require("difftastic-nvim.layout").ensure_rows(file)
     local rows = file.rows or {}
 
-    M.hunk_positions = {}
+    -- Rows where hunks start (1-based).
+    state.hunk_positions = {}
     for _, pos in ipairs(file.hunk_starts or {}) do
-        table.insert(M.hunk_positions, pos + 1)
+        table.insert(state.hunk_positions, pos + 1)
     end
 
     vim.api.nvim_buf_clear_namespace(state.left_buf, LINE_NS, 0, -1)
@@ -360,7 +357,7 @@ end
 --- @param state table Plugin state
 --- @return boolean True if jumped to a hunk, false if at/past last hunk
 function M.next_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return false
     end
     local win = get_diff_win(state)
@@ -369,7 +366,7 @@ function M.next_hunk(state)
     end
 
     local line = vim.api.nvim_win_get_cursor(win)[1]
-    for _, pos in ipairs(M.hunk_positions) do
+    for _, pos in ipairs(state.hunk_positions) do
         if pos > line then
             vim.api.nvim_win_set_cursor(win, { pos, 0 })
             return true
@@ -382,7 +379,7 @@ end
 --- @param state table Plugin state
 --- @return boolean True if jumped to a hunk, false if at/before first hunk
 function M.prev_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return false
     end
     local win = get_diff_win(state)
@@ -391,9 +388,9 @@ function M.prev_hunk(state)
     end
 
     local line = vim.api.nvim_win_get_cursor(win)[1]
-    for i = #M.hunk_positions, 1, -1 do
-        if M.hunk_positions[i] < line then
-            vim.api.nvim_win_set_cursor(win, { M.hunk_positions[i], 0 })
+    for i = #state.hunk_positions, 1, -1 do
+        if state.hunk_positions[i] < line then
+            vim.api.nvim_win_set_cursor(win, { state.hunk_positions[i], 0 })
             return true
         end
     end
@@ -403,24 +400,24 @@ end
 --- Jump to the first hunk.
 --- @param state table Plugin state
 function M.first_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return
     end
     local win = get_diff_win(state)
     if win then
-        vim.api.nvim_win_set_cursor(win, { M.hunk_positions[1], 0 })
+        vim.api.nvim_win_set_cursor(win, { state.hunk_positions[1], 0 })
     end
 end
 
 --- Jump to the last hunk.
 --- @param state table Plugin state
 function M.last_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return
     end
     local win = get_diff_win(state)
     if win then
-        vim.api.nvim_win_set_cursor(win, { M.hunk_positions[#M.hunk_positions], 0 })
+        vim.api.nvim_win_set_cursor(win, { state.hunk_positions[#state.hunk_positions], 0 })
     end
 end
 

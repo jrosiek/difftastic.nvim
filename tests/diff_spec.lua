@@ -315,8 +315,6 @@ describe("diff", function()
     end)
 
     before_each(function()
-        -- Reset hunk positions
-        diff.hunk_positions = {}
         mock_cursor_line = 1
 
         -- Mock vim API
@@ -339,16 +337,14 @@ describe("diff", function()
 
     describe("next_hunk", function()
         it("returns false when no hunks", function()
-            diff.hunk_positions = {}
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = {} }
             local result = diff.next_hunk(state)
             assert.is_false(result)
         end)
 
         it("jumps to next hunk when one exists ahead", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 1
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.next_hunk(state)
 
@@ -357,9 +353,8 @@ describe("diff", function()
         end)
 
         it("jumps to second hunk when cursor is on first", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 5
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.next_hunk(state)
 
@@ -368,9 +363,8 @@ describe("diff", function()
         end)
 
         it("returns false when at last hunk", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 30
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.next_hunk(state)
 
@@ -379,9 +373,8 @@ describe("diff", function()
         end)
 
         it("returns false when past all hunks", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 50
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.next_hunk(state)
 
@@ -391,16 +384,14 @@ describe("diff", function()
 
     describe("prev_hunk", function()
         it("returns false when no hunks", function()
-            diff.hunk_positions = {}
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = {} }
             local result = diff.prev_hunk(state)
             assert.is_false(result)
         end)
 
         it("jumps to previous hunk when one exists behind", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 20
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.prev_hunk(state)
 
@@ -409,9 +400,8 @@ describe("diff", function()
         end)
 
         it("jumps to first hunk from second", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 15
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.prev_hunk(state)
 
@@ -420,9 +410,8 @@ describe("diff", function()
         end)
 
         it("returns false when at first hunk", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 5
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.prev_hunk(state)
 
@@ -431,9 +420,8 @@ describe("diff", function()
         end)
 
         it("returns false when before all hunks", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 1
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             local result = diff.prev_hunk(state)
 
@@ -443,9 +431,8 @@ describe("diff", function()
 
     describe("first_hunk", function()
         it("does nothing when no hunks", function()
-            diff.hunk_positions = {}
             mock_cursor_line = 10
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = {} }
 
             diff.first_hunk(state)
 
@@ -453,9 +440,8 @@ describe("diff", function()
         end)
 
         it("jumps to first hunk", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 25
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             diff.first_hunk(state)
 
@@ -465,9 +451,8 @@ describe("diff", function()
 
     describe("last_hunk", function()
         it("does nothing when no hunks", function()
-            diff.hunk_positions = {}
             mock_cursor_line = 10
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = {} }
 
             diff.last_hunk(state)
 
@@ -475,9 +460,8 @@ describe("diff", function()
         end)
 
         it("jumps to last hunk", function()
-            diff.hunk_positions = { 5, 15, 30 }
             mock_cursor_line = 1
-            local state = { left_win = mock_win, right_win = 2 }
+            local state = { left_win = mock_win, right_win = 2, hunk_positions = { 5, 15, 30 } }
 
             diff.last_hunk(state)
 
