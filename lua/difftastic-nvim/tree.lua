@@ -12,10 +12,6 @@ local GLYPHS = {
     expanded = "",
     collapsed = "",
     file = "  ",
-    added = "+",
-    deleted = "-",
-    changed = "●",
-    renamed = "➜",
 }
 
 -- Each diff keeps its panel in its state: `tree` (the NuiTree), `tree_row_width`
@@ -42,19 +38,8 @@ local function get_file_icon(filename)
 end
 
 local function status_icon(node)
-    if node.moved_from then
-        return GLYPHS.renamed, "DifftTreeRenamed"
-    end
-    if node.status == "created" then
-        return GLYPHS.added, "DifftTreeAdded"
-    end
-    if node.status == "deleted" then
-        return GLYPHS.deleted, "DifftTreeDeleted"
-    end
-    if node.additions > 0 or node.deletions > 0 then
-        return GLYPHS.changed, "DifftTreeModified"
-    end
-    return " ", "DifftTreeMuted"
+    local glyph, hl_group = require("difftastic-nvim.diff").file_status(node)
+    return glyph, hl_group
 end
 
 local function append_stat_chip(line, additions, deletions)
@@ -583,6 +568,8 @@ function M.open(state)
         "NormalNC:DifftTreeNormal",
         "EndOfBuffer:DifftTreeEndOfBuffer",
         "CursorLine:DifftTreeCursorLine",
+        "WinBar:DifftBar",
+        "WinBarNC:DifftBarNC",
     }, ",")
 
     vim.bo[state.tree_buf].buftype = "nofile"

@@ -899,9 +899,11 @@ describe("double click in the tree", function()
             for linenr = 1, vim.api.nvim_buf_line_count(s.tree_buf) do
                 local node = s.tree:get_node(linenr)
                 if node and node.file_idx and s.files[node.file_idx].path == path then
+                    -- Screen row of the line, below the window's bar.
+                    local row = vim.fn.screenpos(s.tree_win, linenr, 1).row - 1
                     for _ = 1, 2 do
-                        vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + linenr - 1, pos[2] + 4)
-                        vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + linenr - 1, pos[2] + 4)
+                        vim.api.nvim_input_mouse("left", "press", "", 0, row, pos[2] + 4)
+                        vim.api.nvim_input_mouse("left", "release", "", 0, row, pos[2] + 4)
                     end
                     return
                 end

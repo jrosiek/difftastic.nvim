@@ -260,6 +260,9 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftTreeDivider` | Derived from `Comment` | Tree header divider |
 | `DifftTreeRange` | Links to `BlueItalic` | Tree header revset/base-head value |
 | `DifftTreeNormal` | Derived from `Normal` | Tree panel background |
+| `DifftBar` | Derived from `Normal` | Bar on top of the focused side panel or diff pane |
+| `DifftBarNC` | Derived from `Normal` | Bar on top of the other windows of the view |
+| `DifftBarMuted` | Links to `NonText` | Directory of the file in a diff pane's bar |
 | `DifftTreeCursorLine` | Derived from `Normal` | Tree cursorline background |
 | `DifftTreeCurrent` | Derived from `Normal` | Current file highlight |
 

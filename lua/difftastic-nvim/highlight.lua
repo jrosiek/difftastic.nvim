@@ -96,6 +96,7 @@ M.linked = {
     DifftTreeRange = { link = "BlueItalic" },
     DifftDiffTitle = { link = "Title" },
     DifftDiffSubtitle = { link = "NonText" },
+    DifftBarMuted = { link = "NonText" },
 
     -- Picker text highlights
     DifftPickerJjIconCurrent = { link = "Added" },
@@ -159,6 +160,11 @@ local function apply_highlights(overrides)
         DifftRemovedLine = { bg = removed_line_bg },
         DifftTreeCurrent = { bg = normal_blend, bold = true },
         DifftTreeNormal = { bg = tree_panel_bg },
+        -- The bars on top of the side panel and the diff panes share the panel's
+        -- background and are underlined in its frame colour; the text of an
+        -- unfocused window's bar is dimmed.
+        DifftBar = { fg = normal_fg, bg = tree_panel_bg, underline = true, sp = comment_fg },
+        DifftBarNC = { fg = blend(normal_fg, normal_bg, 0.6), bg = tree_panel_bg, underline = true, sp = comment_fg },
         DifftTreeCursorLine = { bg = tree_cursor_bg },
         DifftTreeEndOfBuffer = { fg = tree_panel_bg, bg = tree_panel_bg },
         DifftTreeTitle = { fg = normal_fg, bold = true },
