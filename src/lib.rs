@@ -81,20 +81,22 @@ fn jj_file_content(root: &Path, revset: &str, path: &Path) -> Option<String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Gets the git repository root directory.
-fn git_root() -> Option<PathBuf> {
+/// Gets the root of the git repository containing `dir`.
+fn git_root(dir: &Path) -> Option<PathBuf> {
     Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
 }
 
-/// Gets the jj repository root directory.
-fn jj_root() -> Option<PathBuf> {
+/// Gets the root of the jj repository containing `dir`.
+fn jj_root(dir: &Path) -> Option<PathBuf> {
     Command::new("jj")
         .args(["root"])
+        .current_dir(dir)
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -111,11 +113,15 @@ type FileStats = HashMap<PathBuf, (u32, u32)>;
 /// - `&["HEAD^..HEAD"]` for a commit range
 /// - `&[]` for unstaged changes (working tree vs index)
 /// - `&["--cached"]` for staged changes (index vs HEAD)
-fn git_diff_stats(extra_args: &[&str]) -> FileStats {
+fn git_diff_stats(root: &Path, extra_args: &[&str]) -> FileStats {
     let mut args = vec!["diff", "--numstat"];
     args.extend(extra_args);
 
-    let output = Command::new("git").args(&args).output().ok();
+    let output = Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .output()
+        .ok();
 
     let Some(output) = output.filter(|o| o.status.success()) else {
         return HashMap::new();
@@ -150,7 +156,7 @@ fn parse_jj_range(revset: &str) -> Option<(String, String)> {
     Some((old.to_string(), new.to_string()))
 }
 
-fn jj_git_commits(revset: &str) -> Option<Vec<String>> {
+fn jj_git_commits(root: &Path, revset: &str) -> Option<Vec<String>> {
     let output = Command::new("jj")
         .args([
             "log",
@@ -160,6 +166,7 @@ fn jj_git_commits(revset: &str) -> Option<Vec<String>> {
             "-T",
             "commit_id ++ \"\n\"",
         ])
+        .current_dir(root)
         .output()
         .ok()?;
 
@@ -195,27 +202,31 @@ fn git_range_from_jj_commits(old_revs: &[String], new_revs: &[String]) -> Option
     Some(format!("{}..{}", old_revs[0], new_revs[0]))
 }
 
-fn jj_diff_git_range(mode: &DiffMode) -> Option<String> {
+fn jj_diff_git_range(root: &Path, mode: &DiffMode) -> Option<String> {
     let revset = jj_diff_revset(mode);
-    let old_revs = jj_git_commits(&format!("roots({revset})-"))?;
-    let new_revs = jj_git_commits(&format!("heads({revset})"))?;
+    let old_revs = jj_git_commits(root, &format!("roots({revset})-"))?;
+    let new_revs = jj_git_commits(root, &format!("heads({revset})"))?;
 
     git_range_from_jj_commits(&old_revs, &new_revs)
 }
 
-fn jj_diff_stats(mode: &DiffMode) -> FileStats {
-    let Some(git_range) = jj_diff_git_range(mode) else {
+fn jj_diff_stats(root: &Path, mode: &DiffMode) -> FileStats {
+    let Some(git_range) = jj_diff_git_range(root, mode) else {
         return HashMap::new();
     };
 
-    git_diff_stats(&[git_range.as_str()])
+    git_diff_stats(root, &[git_range.as_str()])
 }
 
 /// Runs difftastic via jj for the mode (`jj diff [-r <revset>] --tool difft`) and
 /// parses the JSON output.
-fn run_jj_diff(mode: &DiffMode, run: &Run) -> Result<Vec<difftastic::DifftFile>, DiffError> {
+fn run_jj_diff(
+    root: &Path,
+    mode: &DiffMode,
+    run: &Run,
+) -> Result<Vec<difftastic::DifftFile>, DiffError> {
     let mut cmd = Command::new("jj");
-    cmd.arg("diff");
+    cmd.arg("diff").current_dir(root);
     match mode {
         DiffMode::Range(revset) => {
             cmd.args(["-r", revset]);
@@ -364,10 +375,10 @@ enum GitSide {
 }
 
 /// The sides compared for a diff mode, as `git diff` would compare them.
-fn git_sides(mode: &DiffMode) -> (GitSide, GitSide, Vec<String>) {
+fn git_sides(root: &Path, mode: &DiffMode) -> (GitSide, GitSide, Vec<String>) {
     match mode {
         DiffMode::Range(range) => {
-            let (old_ref, new_ref) = parse_git_range(range);
+            let (old_ref, new_ref) = parse_git_range(root, range);
             let args = vec![format!("{old_ref}..{new_ref}")];
             (GitSide::Rev(old_ref), GitSide::Rev(new_ref), args)
         }
@@ -482,13 +493,14 @@ fn run_difft_git_style(
 /// both sides once, runs difftastic on them as `git -c diff.external=difft diff`
 /// would, and builds the rows from the same bytes.
 fn git_display_files(
+    dir: &Path,
     mode: &DiffMode,
     max_parallel: usize,
     run: &Run,
 ) -> Result<(Vec<processor::DisplayFile>, HashMap<PathBuf, PathBuf>), DiffError> {
     run.note("Listing changes");
-    let root = git_root().ok_or_else(|| "Not inside a git repository".to_string())?;
-    let (old_side, new_side, extra_args) = git_sides(mode);
+    let root = git_root(dir).ok_or_else(|| "Not inside a git repository".to_string())?;
+    let (old_side, new_side, extra_args) = git_sides(&root, mode);
 
     let output = run.output(
         Command::new("git")
@@ -506,7 +518,10 @@ fn git_display_files(
         .filter(|c| c.status != 'U')
         .collect();
     let renames = git_renames(&changes);
-    let stats = git_diff_stats(&extra_args.iter().map(String::as_str).collect::<Vec<_>>());
+    let stats = git_diff_stats(
+        &root,
+        &extra_args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
 
     run.set_total(changes.len());
     let files = job::map_limited(changes, max_parallel, |change| {
@@ -551,17 +566,18 @@ fn git_renames(changes: &[GitChange]) -> HashMap<PathBuf, PathBuf> {
 
 /// The display files of a jj diff, and its renames (new path to old path).
 fn jj_display_files(
+    dir: &Path,
     mode: &DiffMode,
     max_parallel: usize,
     run: &Run,
 ) -> Result<(Vec<processor::DisplayFile>, HashMap<PathBuf, PathBuf>), DiffError> {
+    // Every jj command runs from the repo root, so the paths it reports and the
+    // paths `jj file show` resolves are both repo-root-relative.
+    let root = jj_root(dir).unwrap_or_else(|| dir.to_path_buf());
     run.note("Running jj diff");
-    let files = run_jj_diff(mode, run)?;
-    let stats = jj_diff_stats(mode);
-    let renames = jj_rename_map(mode);
-    // Paths from difftastic are repo-root-relative, but jj file show resolves
-    // relative to the current directory.
-    let root = jj_root().unwrap_or_else(|| PathBuf::from("."));
+    let files = run_jj_diff(&root, mode, run)?;
+    let stats = jj_diff_stats(&root, mode);
+    let renames = jj_rename_map(&root, mode);
     // The revisions to read each side from; no new revision means the working copy.
     let (old_ref, new_ref) = match mode {
         DiffMode::Range(range) => {
@@ -612,9 +628,10 @@ fn bytes_into_lines(content: Option<Vec<u8>>) -> Vec<String> {
 }
 
 /// Gets the merge-base of two git refs.
-fn git_merge_base(a: &str, b: &str) -> Option<String> {
+fn git_merge_base(root: &Path, a: &str, b: &str) -> Option<String> {
     Command::new("git")
         .args(["merge-base", a, b])
+        .current_dir(root)
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -719,9 +736,9 @@ fn parse_jj_summary_renames(output: &str) -> HashMap<PathBuf, PathBuf> {
         .collect()
 }
 
-fn jj_rename_map(mode: &DiffMode) -> HashMap<PathBuf, PathBuf> {
+fn jj_rename_map(root: &Path, mode: &DiffMode) -> HashMap<PathBuf, PathBuf> {
     let mut cmd = Command::new("jj");
-    cmd.arg("diff");
+    cmd.arg("diff").current_dir(root);
 
     match mode {
         DiffMode::Range(revset) => {
@@ -745,9 +762,9 @@ fn jj_rename_map(mode: &DiffMode) -> HashMap<PathBuf, PathBuf> {
 ///
 /// Handles single commits, `A..B` ranges, and `A...B` (merge-base) ranges.
 #[inline]
-fn parse_git_range(range: &str) -> (String, String) {
+fn parse_git_range(root: &Path, range: &str) -> (String, String) {
     if let Some((a, b)) = range.split_once("...") {
-        let base = git_merge_base(a, b).unwrap_or_else(|| format!("{a}^"));
+        let base = git_merge_base(root, a, b).unwrap_or_else(|| format!("{a}^"));
         (base, b.to_string())
     } else if let Some((old, new)) = range.split_once("..") {
         (old.to_string(), new.to_string())
@@ -766,20 +783,23 @@ enum DiffMode {
     Staged,
 }
 
-/// Computes the files of a diff for the mode and VCS. Touches no Lua state, so
-/// it runs on any thread; call it inside the [`job::pool`].
+/// Computes the files of a diff for the mode and VCS, in the repository that
+/// contains `dir`. Touches no Lua state, so it runs on any thread; call it inside
+/// the [`job::pool`]. Every command it starts runs in an explicit directory, never
+/// the process's current one, which can change while the diff is computed.
 /// `max_parallel` caps how many files are processed at once (0: as many as the
 /// pool has threads).
 fn compute_diff(
+    dir: &Path,
     mode: &DiffMode,
     vcs: &str,
     max_parallel: usize,
     run: &Run,
 ) -> Result<Vec<processor::DisplayFile>, DiffError> {
     let (mut display_files, renames) = if vcs == "git" {
-        git_display_files(mode, max_parallel, run)?
+        git_display_files(dir, mode, max_parallel, run)?
     } else {
-        jj_display_files(mode, max_parallel, run)?
+        jj_display_files(dir, mode, max_parallel, run)?
     };
 
     if !renames.is_empty() {
@@ -805,6 +825,16 @@ fn compute_diff(
     Ok(display_files)
 }
 
+/// The directory a diff is computed for: `dir`, or the process's current
+/// directory now (not when the diff's commands start, by which time it may have
+/// changed).
+fn diff_dir(dir: Option<String>) -> LuaResult<PathBuf> {
+    match dir {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => std::env::current_dir().map_err(LuaError::external),
+    }
+}
+
 /// Converts computed files into the table the Lua side gets: `{ files = { ... } }`.
 fn files_to_lua(lua: &Lua, display_files: Vec<processor::DisplayFile>) -> LuaResult<LuaTable> {
     let files_table = lua.create_table()?;
@@ -823,10 +853,12 @@ fn run_diff_blocking(
     mode: DiffMode,
     vcs: &str,
     max_parallel: usize,
+    dir: Option<String>,
 ) -> LuaResult<LuaTable> {
     let run = Run::new(None);
+    let dir = diff_dir(dir)?;
     let files = job::pool()
-        .install(|| compute_diff(&mode, vcs, max_parallel, &run))
+        .install(|| compute_diff(&dir, &mode, vcs, max_parallel, &run))
         .map_err(|e| match e {
             DiffError::Failed(message) => LuaError::RuntimeError(message),
             DiffError::Cancelled => LuaError::RuntimeError("Diff cancelled".to_string()),
@@ -834,25 +866,41 @@ fn run_diff_blocking(
     files_to_lua(lua, files)
 }
 
-/// Runs difftastic for a commit range.
+/// Runs difftastic for a commit range, in the repository containing `dir` (the
+/// current directory when omitted).
 fn run_diff(
     lua: &Lua,
-    (range, vcs, max_parallel): (String, String, Option<usize>),
+    (range, vcs, max_parallel, dir): (String, String, Option<usize>, Option<String>),
 ) -> LuaResult<LuaTable> {
-    run_diff_blocking(lua, DiffMode::Range(range), &vcs, max_parallel.unwrap_or(0))
+    run_diff_blocking(
+        lua,
+        DiffMode::Range(range),
+        &vcs,
+        max_parallel.unwrap_or(0),
+        dir,
+    )
 }
 
-/// Runs difftastic for unstaged changes.
+/// Runs difftastic for unstaged changes, in the repository containing `dir`.
 fn run_diff_unstaged(
     lua: &Lua,
-    (vcs, max_parallel): (String, Option<usize>),
+    (vcs, max_parallel, dir): (String, Option<usize>, Option<String>),
 ) -> LuaResult<LuaTable> {
-    run_diff_blocking(lua, DiffMode::Unstaged, &vcs, max_parallel.unwrap_or(0))
+    run_diff_blocking(
+        lua,
+        DiffMode::Unstaged,
+        &vcs,
+        max_parallel.unwrap_or(0),
+        dir,
+    )
 }
 
-/// Runs difftastic for staged changes.
-fn run_diff_staged(lua: &Lua, (vcs, max_parallel): (String, Option<usize>)) -> LuaResult<LuaTable> {
-    run_diff_blocking(lua, DiffMode::Staged, &vcs, max_parallel.unwrap_or(0))
+/// Runs difftastic for staged changes, in the repository containing `dir`.
+fn run_diff_staged(
+    lua: &Lua,
+    (vcs, max_parallel, dir): (String, Option<usize>, Option<String>),
+) -> LuaResult<LuaTable> {
+    run_diff_blocking(lua, DiffMode::Staged, &vcs, max_parallel.unwrap_or(0), dir)
 }
 
 /// Creates the Lua module exports. Called by mlua when loaded via `require("difftastic_nvim")`.
@@ -861,15 +909,21 @@ fn difftastic_nvim(lua: &Lua) -> LuaResult<LuaTable> {
     let exports = lua.create_table()?;
     exports.set(
         "run_diff",
-        lua.create_function(|lua, args: (String, String, Option<usize>)| run_diff(lua, args))?,
+        lua.create_function(
+            |lua, args: (String, String, Option<usize>, Option<String>)| run_diff(lua, args),
+        )?,
     )?;
     exports.set(
         "run_diff_unstaged",
-        lua.create_function(|lua, args: (String, Option<usize>)| run_diff_unstaged(lua, args))?,
+        lua.create_function(|lua, args: (String, Option<usize>, Option<String>)| {
+            run_diff_unstaged(lua, args)
+        })?,
     )?;
     exports.set(
         "run_diff_staged",
-        lua.create_function(|lua, args: (String, Option<usize>)| run_diff_staged(lua, args))?,
+        lua.create_function(|lua, args: (String, Option<usize>, Option<String>)| {
+            run_diff_staged(lua, args)
+        })?,
     )?;
     lua.set_app_data(dispatch::Dispatcher::new());
     exports.set(
@@ -904,21 +958,21 @@ mod tests {
 
     #[test]
     fn test_parse_git_range_single_commit() {
-        let (old, new) = parse_git_range("abc123");
+        let (old, new) = parse_git_range(Path::new("."), "abc123");
         assert_eq!(old, "abc123^");
         assert_eq!(new, "abc123");
     }
 
     #[test]
     fn test_parse_git_range_double_dot() {
-        let (old, new) = parse_git_range("main..feature");
+        let (old, new) = parse_git_range(Path::new("."), "main..feature");
         assert_eq!(old, "main");
         assert_eq!(new, "feature");
     }
 
     #[test]
     fn test_parse_git_range_empty_left() {
-        let (old, new) = parse_git_range("..HEAD");
+        let (old, new) = parse_git_range(Path::new("."), "..HEAD");
         assert_eq!(old, "");
         assert_eq!(new, "HEAD");
     }
@@ -1256,17 +1310,17 @@ mod tests {
 
     #[test]
     fn test_git_sides_follow_the_diff_mode() {
-        let (old, new, args) = git_sides(&DiffMode::Staged);
+        let (old, new, args) = git_sides(Path::new("."), &DiffMode::Staged);
         assert!(matches!(old, GitSide::Rev(ref r) if r == "HEAD"));
         assert!(matches!(new, GitSide::Rev(ref r) if r.is_empty()));
         assert_eq!(args, vec!["--cached".to_string()]);
 
-        let (old, new, args) = git_sides(&DiffMode::Unstaged);
+        let (old, new, args) = git_sides(Path::new("."), &DiffMode::Unstaged);
         assert!(matches!(old, GitSide::Rev(ref r) if r.is_empty()));
         assert!(matches!(new, GitSide::WorkTree));
         assert!(args.is_empty());
 
-        let (old, new, args) = git_sides(&DiffMode::Range("a..b".to_string()));
+        let (old, new, args) = git_sides(Path::new("."), &DiffMode::Range("a..b".to_string()));
         assert!(matches!(old, GitSide::Rev(ref r) if r == "a"));
         assert!(matches!(new, GitSide::Rev(ref r) if r == "b"));
         assert_eq!(args, vec!["a..b".to_string()]);

@@ -137,7 +137,13 @@ describe("opening a diff asynchronously", function()
         assert.are.equal(width, vim.fn.strdisplaywidth(lines[1]))
         assert.are.equal(width, vim.fn.strdisplaywidth(lines[2]))
         assert.are.same(
-            { mode = "range", revset = "HEAD~2..HEAD", vcs = "git", max_parallel = difft.config.max_parallel_difft_calls },
+            {
+                mode = "range",
+                revset = "HEAD~2..HEAD",
+                vcs = "git",
+                max_parallel = difft.config.max_parallel_difft_calls,
+                cwd = vim.fn.getcwd(-1, start_tab),
+            },
             lib.jobs[1].spec
         )
     end)

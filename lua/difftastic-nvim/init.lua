@@ -396,11 +396,13 @@ M.startup_settle_max_ms = 1000
 --- settled: a GUI may resize the grid right after startup (Neovide applies its
 --- scale factor then), and since computing the diff blocks Neovim, a resize
 --- arriving meanwhile would leave the view laid out for the old size.
+--- The directory is taken now, from the current window, not when the view opens.
 --- @param revset string|nil As for open()
 function M.open_when_ready(revset)
+    local opts = { cwd = vim.fn.getcwd() }
     if vim.v.vim_did_enter == 1 then
         vim.schedule(function()
-            M.open(revset)
+            M.open(revset, opts)
         end)
         return
     end
@@ -426,7 +428,7 @@ function M.open_when_ready(revset)
                 timer:stop()
                 timer:close()
                 pcall(vim.api.nvim_del_augroup_by_id, group)
-                M.open(revset)
+                M.open(revset, opts)
             end))
         end,
     })
@@ -817,7 +819,7 @@ local function open_async(lib, revset, state)
         end,
     })
 
-    local spec = { vcs = M.config.vcs, max_parallel = M.config.max_parallel_difft_calls }
+    local spec = { vcs = M.config.vcs, max_parallel = M.config.max_parallel_difft_calls, cwd = state.cwd }
     if revset == nil then
         spec.mode = "unstaged"
     elseif revset == "--staged" then
@@ -845,11 +847,20 @@ end
 
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
-function M.open(revset)
+--- @param opts table|nil `cwd`: a directory inside the repository to diff; the
+---   current window's working directory when omitted
+function M.open(revset, opts)
+    opts = opts or {}
+    -- Absolute, so it does not depend on the directory current later.
+    local cwd = vim.fn.fnamemodify(opts.cwd or vim.fn.getcwd(), ":p"):gsub("(.)/$", "%1")
+    if vim.fn.isdirectory(cwd) == 0 then
+        error("difftastic-nvim: not a directory: " .. cwd, 0)
+    end
     if M.config.multiple_diffs then
-        -- A diff of the same revset already open (or loading): go to its tab.
+        -- A diff of the same revset in the same directory already open (or
+        -- loading): go to its tab.
         for tab, state in pairs(diffs) do
-            if state.revset == revset and vim.api.nvim_tabpage_is_valid(tab) then
+            if state.revset == revset and state.cwd == cwd and vim.api.nvim_tabpage_is_valid(tab) then
                 vim.api.nvim_set_current_tabpage(tab)
                 return
             end
@@ -866,8 +877,11 @@ function M.open(revset)
     -- Show the new tab with a loading message while the diff is computed.
     local state = new_state()
     state.revset = revset
+    state.cwd = cwd
     state.original_tabpage = vim.api.nvim_get_current_tabpage()
     vim.cmd("tabnew")
+    -- The diff tab works in the diffed directory, whatever the tab it came from.
+    vim.cmd.tcd(vim.fn.fnameescape(cwd))
     state.diff_tabpage = vim.api.nvim_get_current_tabpage()
     diffs[state.diff_tabpage] = state
     -- Let Neovim handle input still queued, such as a terminal resize reported while
@@ -888,11 +902,11 @@ function M.open(revset)
             error(lib, 0)
         end
         if revset == nil then
-            return lib.run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
+            return lib.run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls, cwd)
         elseif revset == "--staged" then
-            return lib.run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
+            return lib.run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls, cwd)
         end
-        return lib.run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+        return lib.run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls, cwd)
     end)
     if vim.api.nvim_win_is_valid(loading_win) then
         vim.api.nvim_win_close(loading_win, true)

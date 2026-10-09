@@ -159,7 +159,8 @@ fn deliver_result(
 /// the thread pool and returns a job handle with `cancel()`.
 ///
 /// `spec` is `{ mode = "range"|"unstaged"|"staged", revset = ..., vcs = ...,
-/// max_parallel = ... }` (`revset` only for "range"). Both callbacks run on the
+/// max_parallel = ..., cwd = ... }` (`revset` only for "range"; `cwd`, a
+/// directory inside the repository, defaults to the current one). Both callbacks run on the
 /// main thread, from `poll()`: `on_progress(count, total, message)`, with
 /// `total` -1 while unknown, cancels the job by returning `false`;
 /// `on_complete(result, err)` gets the table the blocking functions return, or
@@ -180,6 +181,7 @@ pub fn run_diff_async(
     };
     let vcs: String = spec.get("vcs")?;
     let max_parallel = spec.get::<Option<usize>>("max_parallel")?.unwrap_or(0);
+    let dir = crate::diff_dir(spec.get::<Option<String>>("cwd")?)?;
 
     let (post, guard) = {
         let dispatcher = dispatcher(lua)?;
@@ -220,7 +222,7 @@ pub fn run_diff_async(
     let worker_job = Arc::clone(&job);
     job::pool().spawn(move || {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            compute_diff(&mode, &vcs, max_parallel, &worker_job.run)
+            compute_diff(&dir, &mode, &vcs, max_parallel, &worker_job.run)
         }))
         .unwrap_or_else(|panic| {
             let message = panic
