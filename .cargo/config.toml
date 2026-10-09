@@ -1,5 +1,11 @@
-[build]
-rustflags = ["-C", "target-cpu=native"]
+# A fixed CPU level, not `target-cpu=native`. `native` compiles for the CPU of
+# the machine doing the build, so the result may crash with an illegal
+# instruction on an older CPU. That broke CI, which restores cached build
+# artifacts on runners with other CPUs, and it would affect the release
+# binaries users download. x86-64-v2 (SSE4.2, POPCNT) runs on practically
+# every x86-64 CPU in use; other architectures use their default level.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v2"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
