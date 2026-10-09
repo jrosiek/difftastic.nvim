@@ -421,8 +421,8 @@ themes.
 
 Treesitter mode (background colors):
     Group                 Default                 Description ~
-    DifftAdded            Derived from `Added`    Added lines background
-    DifftRemoved          Derived from `Removed`  Removed lines background
+    DifftAdded            Derived from `Added`    Added text within a line (background, underline)
+    DifftRemoved          Derived from `Removed`  Removed text within a line (background, underline)
     DifftAddedLine        Derived from `Added`    Lighter added line background
     DifftRemovedLine      Derived from `Removed`  Lighter removed line background
 
@@ -449,7 +449,7 @@ Tree highlights:
     DifftDiffSubtitle     Derived from `Normal`   Subtitle below it, e.g. the count of further commits
     DifftTreeRule         Derived from `Normal`   Rules of the tree header and the loading window
     DifftLoadingDone      Derived from the accent Percentage done in the loading window
-    DifftTreeRange        Links to `BlueItalic`   Tree header revset/base-head value
+    DifftTreeRange        Derived from `Changed`  Tree header revset/base-head value
     DifftTreeNormal       Derived from `Normal`   Tree panel background
     DifftBar              Derived from `Normal`   Bar on top of the focused panel or diff pane
     DifftBarNC            Derived from `Normal`   Bar on top of the other windows of the view

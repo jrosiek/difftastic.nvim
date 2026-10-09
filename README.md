@@ -3,7 +3,10 @@
 > - **Never blocks Neovim.** Diffs are computed in the background, files in parallel, with live progress; `q` cancels.
 > - **Built for review.** Mark files as reviewed (`R`), jump to the next unreviewed one (`]u` / `[u`), see progress in the panel (`3/12 reviewed`). Each file remembers where you left it.
 > - **Less noise.** Unchanged lines are folded around each change, with the fold state kept in step between both panes.
+> - **Knows what it shows.** The panel is titled after the diffed commits (or "Staged changes" with the time), and bars name the file and its change on each side. Added and deleted files take a single pane.
 > - **Real line numbers.** The panes show each file's own line numbers, not buffer rows; `gf` opens the file at the right line.
+> - **Word-level changes everywhere.** With `download = true` the plugin downloads a library matching its version and a `difft` that marks only the changed words in comments, strings and text, as it does in code.
+> - **Robust.** A file `difft` fails on is compared line by line instead of failing the review.
 > - **Several diffs at once.** With `multiple_diffs = true`, each diff gets its own tab.
 > - **A layout that behaves.** Panes keep their split on resize, double-click a split to reset it, and the colours follow your theme, including NvChad's theme switcher.
 >
@@ -229,8 +232,8 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 
 | Group | Default | Description |
 |-------|---------|-------------|
-| `DifftAdded` | Derived from `Added` | Added lines background |
-| `DifftRemoved` | Derived from `Removed` | Removed lines background |
+| `DifftAdded` | Derived from `Added` | Added text within a line (background and underline) |
+| `DifftRemoved` | Derived from `Removed` | Removed text within a line (background and underline) |
 | `DifftAddedLine` | Derived from `Added` | Lighter added line background |
 | `DifftRemovedLine` | Derived from `Removed` | Lighter removed line background |
 
@@ -263,7 +266,7 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftDiffSubtitle` | Derived from `Normal` | Subtitle below it, e.g. the count of further commits |
 | `DifftTreeRule` | Derived from `Normal` | Rules of the tree header and the loading window |
 | `DifftLoadingDone` | Derived from the fold accent | Percentage done in the loading window |
-| `DifftTreeRange` | Links to `BlueItalic` | Tree header revset/base-head value |
+| `DifftTreeRange` | Derived from `Changed`/`Identifier` | Tree header revset/base-head value |
 | `DifftTreeNormal` | Derived from `Normal` | Tree panel background |
 | `DifftBar` | Derived from `Normal` | Bar on top of the focused side panel or diff pane |
 | `DifftBarNC` | Derived from `Normal` | Bar on top of the other windows of the view |
