@@ -112,6 +112,56 @@ describe("diff title", function()
         assert.is_true(is_rule(header()[3]))
     end)
 
+    describe("range", function()
+        --- The header rows of the range: from the stats row's next row to the rule.
+        local function range_lines()
+            local rows = {}
+            local lines = header()
+            for i = 2, #lines do
+                if is_rule(lines[i]) then
+                    break
+                end
+                table.insert(rows, lines[i])
+            end
+            return rows
+        end
+
+        local function open_with(range, width)
+            difft.open(range)
+            vim.api.nvim_win_set_width(difft.state.tree_win, width)
+            vim.api.nvim_exec_autocmds("WinResized", {})
+        end
+
+        it("fits on one row when it can", function()
+            open_with("HEAD~3..HEAD", 40)
+            local rows = range_lines()
+            assert.are.equal(1, #rows)
+            assert.truthy(rows[1]:match("^ Base/Head +HEAD~3 → HEAD $"), rows[1])
+        end)
+
+        it("continues after its arrow on a second row", function()
+            open_with("tags/v5.8.2-stable~227..tags/v5.8.2-stable", 40)
+            local rows = range_lines()
+            assert.are.equal(2, #rows)
+            assert.truthy(rows[1]:match("^ Base/Head +tags/v5%.8%.2%-stable~227 → $"), rows[1])
+            assert.truthy(rows[2]:match("^ +tags/v5%.8%.2%-stable $"), rows[2])
+            for _, row in ipairs(rows) do
+                assert.are.equal(40, vim.fn.strdisplaywidth(row))
+            end
+        end)
+
+        it("cuts a side too long for its row at its start", function()
+            open_with("refs/remotes/origin/some/very/long/branch~12..refs/remotes/origin/some/very/long/branch", 30)
+            local rows = range_lines()
+            assert.are.equal(2, #rows)
+            assert.truthy(rows[1]:match("^ Base/Head +…[^ ]*branch~12 → $"), rows[1])
+            assert.truthy(rows[2]:match("^ …[^ ]*/long/branch $"), rows[2])
+            for _, row in ipairs(rows) do
+                assert.are.equal(30, vim.fn.strdisplaywidth(row))
+            end
+        end)
+    end)
+
     it("wraps a long subtitle above the rule", function()
         result.title, result.subtitle = "Fix it", "a subtitle long enough to wrap onto more than one row"
         difft.open("HEAD")

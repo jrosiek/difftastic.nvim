@@ -87,9 +87,49 @@ local function trim_to_width(text, width)
     return result .. ellipsis
 end
 
+--- Cut text to `width` display cells keeping its end, with "…" at the start.
+local function trim_start_to_width(text, width)
+    if display_width(text) <= width then
+        return text
+    end
+    if width <= 0 then
+        return ""
+    end
+    local chars = vim.fn.strchars(text)
+    local take = chars
+    while take > 0 and display_width("…" .. vim.fn.strcharpart(text, chars - take)) > width do
+        take = take - 1
+    end
+    return "…" .. vim.fn.strcharpart(text, chars - take)
+end
+
+--- The rows of the header's range: the kind on the left and the range on the
+--- right. A range too long for one row continues after its arrow on a second
+--- row; a side still too long for its row is cut at its start, keeping its end.
+--- @param kind string e.g. "Base/Head"
+--- @param text string e.g. "main → feature"
+--- @param width number Width inside the margins
+--- @return table[] `{ kind, value }` per row (`kind` empty on a second row)
+local function range_rows(kind, text, width)
+    local room = math.max(0, width - display_width(kind) - 1)
+    if display_width(text) <= room then
+        return { { kind, text } }
+    end
+    for _, sep in ipairs({ " → ", " … " }) do
+        local at = text:find(sep, 1, true)
+        if at then
+            local base = text:sub(1, at - 1) .. sep:gsub(" $", "")
+            local head = text:sub(at + #sep)
+            return { { kind, trim_start_to_width(base, room) }, { "", trim_start_to_width(head, width) } }
+        end
+    end
+    return { { kind, room > 0 and trim_to_width(text, room) or "" } }
+end
+
 local function fit_header_row(left, right, width)
     local gap = width - display_width(left) - display_width(right)
-    if gap < 1 then
+    -- Without a left part, the right part may take the whole width.
+    if gap < (left == "" and 0 or 1) then
         local right_width = math.max(0, width - display_width(left) - 1)
         if right_width > 0 then
             return fit_header_row(left, trim_to_width(right, right_width), width)
@@ -473,13 +513,9 @@ local function render_header(state, total_add, total_del, replace_lines)
     local inner_width = math.max(0, width - 2)
     local stats_inner = fit_header_row(file_label, stat_text, inner_width)
     local range_kind = state.range_kind or "Range"
-    local range_text = state.range_label or ""
-    local range_value_width = math.max(0, inner_width - display_width(range_kind) - 1)
-    local range_display = range_value_width > 0 and trim_to_width(range_text, range_value_width) or ""
-    local range_inner = fit_header_row(range_kind, range_display, inner_width)
+    local ranges = range_rows(range_kind, state.range_label or "", inner_width)
 
     local stats_line = " " .. stats_inner .. " "
-    local range_line = " " .. range_inner .. " "
     -- A rule is a blank row underlined like the bars, one cell short of the
     -- panel's edges. A blank row, so that a terminal drawing underlines in the
     -- text colour draws it in one colour.
@@ -504,8 +540,10 @@ local function render_header(state, total_add, total_del, replace_lines)
     end
     table.insert(lines, stats_line)
     local stats_row = #lines - 1
-    table.insert(lines, range_line)
-    local range_row = #lines - 1
+    local range_first_row = #lines
+    for _, row in ipairs(ranges) do
+        table.insert(lines, " " .. fit_header_row(row[1], row[2], inner_width) .. " ")
+    end
     add_rule()
 
     vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, lines)
@@ -532,13 +570,15 @@ local function render_header(state, total_add, total_del, replace_lines)
     if del_col then
         vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftFileDeleted", stats_row, del_col - 1, del_col + #del_text - 1)
     end
-    local range_kind_col = range_line:find(range_kind, 1, true)
-    if range_kind_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", range_row, range_kind_col - 1, range_kind_col + #range_kind - 1)
-    end
-    local range_value_col = range_display ~= "" and range_line:find(range_display, 1, true) or nil
-    if range_value_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", range_row, range_value_col - 1, #range_line - #" ")
+    for i, row in ipairs(ranges) do
+        local line_nr = range_first_row + i - 1
+        local line = lines[line_nr + 1]
+        if row[1] ~= "" then
+            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", line_nr, 1, 1 + #row[1])
+        end
+        if row[2] ~= "" then
+            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", line_nr, #line - 1 - #row[2], #line - 1)
+        end
     end
 end
 
