@@ -101,15 +101,15 @@ describe("derived highlight groups", function()
     end)
 
     it("keep the overrides given to setup()", function()
-        highlight.setup({ DifftFold = { fg = "#123456" }, DifftTreeTitle = { fg = "#abcdef", bold = false } })
+        highlight.setup({ DifftFold = { fg = "#123456" }, DifftTreeCurrent = { fg = "#abcdef", bold = false } })
         apply_theme("#f8f8f2", "#272822", "#555650")
 
         difft.open("HEAD")
 
         assert.are.equal("#123456", hex(vim.api.nvim_get_hl(0, { name = "DifftFold" }).fg))
-        local title = vim.api.nvim_get_hl(0, { name = "DifftTreeTitle" })
-        assert.are.equal("#abcdef", hex(title.fg))
-        assert.is_nil(title.bold)
+        local current = vim.api.nvim_get_hl(0, { name = "DifftTreeCurrent" })
+        assert.are.equal("#abcdef", hex(current.fg))
+        assert.is_nil(current.bold)
         -- Groups without an override still follow the new theme.
         assert.are.equal("#555650", hex(vim.api.nvim_get_hl(0, { name = "DifftTreeMuted" }).fg))
     end)

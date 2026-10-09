@@ -165,10 +165,14 @@ local function apply_highlights(overrides)
         -- unfocused window's bar is dimmed.
         DifftBar = { fg = normal_fg, bg = tree_panel_bg, underline = true, sp = comment_fg },
         DifftBarNC = { fg = blend(normal_fg, normal_bg, 0.6), bg = tree_panel_bg, underline = true, sp = comment_fg },
+        -- The rules of the side panel's header, drawn like the bars' underlines:
+        -- in the frame colour where terminals support underline colours, else in
+        -- the unfocused bars' text colour.
+        DifftTreeRule = { fg = blend(normal_fg, normal_bg, 0.6), underline = true, sp = comment_fg },
+        -- The percentage done in the loading window's bar.
+        DifftLoadingDone = { fg = accent_fg, underline = true, sp = accent_fg },
         DifftTreeCursorLine = { bg = tree_cursor_bg },
         DifftTreeEndOfBuffer = { fg = tree_panel_bg, bg = tree_panel_bg },
-        DifftTreeTitle = { fg = normal_fg, bold = true },
-        DifftTreeDivider = { fg = comment_fg },
         DifftTreeMuted = { fg = comment_fg },
         DifftTreeIndent = { fg = comment_fg },
         DifftTreeChevron = { fg = comment_fg },

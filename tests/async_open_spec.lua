@@ -130,12 +130,17 @@ describe("opening a diff asynchronously", function()
         assert.are_not.equal(start_tab, tab)
         assert.is_nil(difft.state.left_win)
         local lines, win = loading_lines(tab)
-        -- The range kind left and the range right; the progress row likewise.
-        assert.truthy(lines[1]:match("^ Base/Head +HEAD~2 → HEAD $"), lines[1])
-        assert.truthy(lines[2]:match("^ +Starting… $"), lines[2])
+        -- A bar with a spinner while the total is unknown, the range kind left
+        -- and the range right, the last message, and the rule.
+        assert.are.equal(4, #lines)
+        assert.truthy(lines[1]:match("^ Loading… +%S+ $"), lines[1])
+        assert.truthy(lines[2]:match("^ Base/Head +HEAD~2 → HEAD $"), lines[2])
+        assert.truthy(lines[3]:match("^ +Starting… $"), lines[3])
+        assert.truthy(lines[4]:match("^ +$"), lines[4])
         local width = vim.api.nvim_win_get_width(win)
-        assert.are.equal(width, vim.fn.strdisplaywidth(lines[1]))
-        assert.are.equal(width, vim.fn.strdisplaywidth(lines[2]))
+        for _, line in ipairs(lines) do
+            assert.are.equal(width, vim.fn.strdisplaywidth(line))
+        end
         assert.are.same(
             {
                 mode = "range",
@@ -161,27 +166,41 @@ describe("opening a diff asynchronously", function()
 
         lib.jobs[1]:progress(0, -1, "Listing changes")
         assert.is_true(delivered(lib))
-        assert.truthy(loading_lines(tab)[2]:match("^ +Listing changes $"), loading_lines(tab)[2])
+        assert.truthy(loading_lines(tab)[3]:match("^ +Listing changes $"), loading_lines(tab)[3])
 
         lib.jobs[1]:progress(2, 5, "a.txt")
         assert.is_true(delivered(lib))
-        assert.truthy(loading_lines(tab)[2]:match("^ 2/5 files +a%.txt $"), loading_lines(tab)[2])
-        -- The numbers stand out; the message is normal text.
-        local _, win = loading_lines(tab)
-        local marks = vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(win), -1, { 1, 0 }, { 1, -1 }, { details = true })
-        assert.are.equal(1, #marks)
-        assert.are.same({ 1, 10, "Directory" }, { marks[1][3], marks[1][4].end_col, marks[1][4].hl_group })
+        local lines, win = loading_lines(tab)
+        assert.truthy(lines[1]:match("^ Loading… +40%% $"), lines[1])
+        assert.truthy(lines[3]:match("^ +a%.txt $"), lines[3])
+        -- The rule below keeps the rule colour; the percentage is in the
+        -- progress colour, drawn over the bar.
+        local buf = vim.api.nvim_win_get_buf(win)
+        local function marks(row)
+            local found = {}
+            for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, { row, 0 }, { row, -1 }, { details = true })) do
+                found[mark[4].hl_group] = { mark[3], mark[4].end_col, mark[4].priority }
+            end
+            return found
+        end
+        local width = vim.api.nvim_win_get_width(win)
+        local rule = marks(3)
+        assert.are.same({ 1, width - 1 }, { rule.DifftTreeRule[1], rule.DifftTreeRule[2] })
+        assert.is_nil(rule.DifftLoadingDone)
+        local bar = marks(0)
+        assert.is_true(bar.DifftLoadingDone[3] > bar.DifftBar[3])
+        assert.are.equal("40%", lines[1]:sub(bar.DifftLoadingDone[1] + 1, bar.DifftLoadingDone[2]))
 
         -- A report without a message keeps the last one.
         lib.jobs[1]:progress(2, 5, "")
         assert.is_true(delivered(lib))
-        assert.truthy(loading_lines(tab)[2]:match("^ 2/5 files +a%.txt $"), loading_lines(tab)[2])
+        assert.truthy(loading_lines(tab)[3]:match("^ +a%.txt $"), loading_lines(tab)[3])
 
         -- A message too long for the row is cut at its start.
         lib.jobs[1]:progress(3, 5, string.rep("x", 100) .. "end.lua")
         assert.is_true(delivered(lib))
-        local row = loading_lines(tab)[2]
-        assert.truthy(row:match("^ 3/5 files …x*end%.lua $"), row)
+        local row = loading_lines(tab)[3]
+        assert.truthy(row:match("^ …x*end%.lua $"), row)
         assert.are.equal(vim.api.nvim_win_get_width(select(2, loading_lines(tab))), vim.fn.strdisplaywidth(row))
     end)
 
@@ -312,7 +331,10 @@ describe("opening a diff asynchronously", function()
         local config = vim.api.nvim_win_get_config(win)
         vim.o.columns = columns
 
-        assert.are.equal(math.floor((columns + 40 - config.width - 2) / 2), config.col)
+        -- Borderless: centred on its own size, all four rows kept.
+        assert.are.equal(math.floor((columns + 40 - config.width) / 2), config.col)
+        assert.are.equal(4, config.height)
+        assert.are.equal(math.floor((vim.o.lines - 4) / 2), config.row)
     end)
 end)
 

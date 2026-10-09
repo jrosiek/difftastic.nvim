@@ -59,42 +59,67 @@ describe("diff title", function()
         return vim.api.nvim_buf_get_lines(difft.state.tree_buf, 0, difft.state.header_lines, false)
     end
 
-    -- Title and subtitle rows between the top border and the divider, without the frame.
+    local function is_rule(line)
+        return line:match("^%s*$") ~= nil
+    end
+
+    -- Title and subtitle rows above the first rule.
     local function title_rows()
         local rows = {}
-        for i = 2, #header() do
-            local line = header()[i]
-            if vim.startswith(line, "├") then
+        for _, line in ipairs(header()) do
+            if is_rule(line) then
                 return rows
             end
-            table.insert(rows, vim.trim(line:gsub("^│ ", ""):gsub(" │$", "")))
+            table.insert(rows, vim.trim(line))
         end
         return {}
     end
 
-    it("shows the title at the top of the box, divided from the stats", function()
+    --- Highlight groups of the header's row (0-based), by start and end column.
+    local function groups(row)
+        local list = {}
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, -1, { row, 0 }, { row, -1 }, { details = true })) do
+            list[mark[4].hl_group] = { mark[3], mark[4].end_col }
+        end
+        return list
+    end
+
+    it("shows the title on top, ruled off from the stats", function()
         result.title = "Review of PR 42"
         difft.open("HEAD")
 
         local lines = header()
-        assert.are.equal(6, #lines)
-        assert.are.equal("╭", vim.fn.strcharpart(lines[1], 0, 1))
-        assert.falsy(lines[1]:find("Difftastic", 1, true))
-        assert.truthy(lines[2]:find("Review of PR 42", 1, true))
-        assert.is_true(vim.startswith(lines[3], "├"))
-        assert.truthy(lines[4]:find("1 file", 1, true))
-        assert.truthy(lines[5]:find("HEAD^ → HEAD", 1, true))
-        assert.is_true(vim.startswith(lines[6], "╰"))
-        -- The file tree starts right below the box.
+        assert.are.equal(5, #lines)
+        assert.are.equal(" Review of PR 42", lines[1]:gsub("%s+$", ""))
+        assert.is_true(is_rule(lines[2]))
+        assert.truthy(lines[3]:find("^ 1 file"))
+        assert.truthy(lines[4]:find("HEAD^ → HEAD ", 1, true))
+        assert.is_true(is_rule(lines[5]))
+        -- The rules are underlines, one cell short of the panel's edges.
+        local width = vim.fn.strdisplaywidth(lines[1])
+        assert.are.same({ 1, width - 1 }, groups(1).DifftTreeRule)
+        assert.are.same({ 1, width - 1 }, groups(4).DifftTreeRule)
+        -- The file tree starts right below the header.
         local below = vim.api.nvim_buf_get_lines(difft.state.tree_buf, difft.state.header_lines, -1, false)
         assert.truthy(table.concat(below, "\n"):find("a.txt", 1, true))
     end)
 
-    it("keeps the four-line box without a title", function()
+    it("has the stats, the range and one rule without a title", function()
         difft.open("HEAD")
 
-        assert.are.equal(4, #header())
-        assert.is_true(vim.startswith(header()[4], "╰"))
+        assert.are.equal(3, #header())
+        assert.truthy(header()[1]:find("^ 1 file"))
+        assert.is_true(is_rule(header()[3]))
+    end)
+
+    it("wraps a long subtitle above the rule", function()
+        result.title, result.subtitle = "Fix it", "a subtitle long enough to wrap onto more than one row"
+        difft.open("HEAD")
+
+        local rows = title_rows()
+        assert.are.equal("Fix it", rows[1])
+        assert.is_true(#rows > 2)
+        assert.are.equal(result.subtitle, table.concat(vim.list_slice(rows, 2), " "))
     end)
 
     it("shows the subtitle below the title, each in its own colour", function()
@@ -102,14 +127,8 @@ describe("diff title", function()
         difft.open("HEAD")
 
         assert.are.same({ "Fix the parser", "+2 more" }, title_rows())
-        local marks = vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, -1, { 1, 0 }, { 2, -1 }, { details = true })
-        local groups = {}
-        for _, mark in ipairs(marks) do
-            groups[mark[2]] = groups[mark[2]] or {}
-            groups[mark[2]][mark[4].hl_group] = true
-        end
-        assert.is_true(groups[1].DifftDiffTitle)
-        assert.is_true(groups[2].DifftDiffSubtitle)
+        assert.is_not_nil(groups(0).DifftDiffTitle)
+        assert.is_not_nil(groups(1).DifftDiffSubtitle)
     end)
 
     it("shows the time of a staged or working-tree snapshot as the subtitle", function()
@@ -165,7 +184,7 @@ describe("diff title", function()
 
         assert.is_true(state.header_lines > wide_height)
         local lines = vim.api.nvim_buf_get_lines(state.tree_buf, 0, -1, false)
-        assert.is_true(vim.startswith(lines[state.header_lines], "╰"))
+        assert.is_true(is_rule(lines[state.header_lines]))
         -- The tree starts right below the new box, with dir still collapsed.
         local tree_text = table.concat(vim.list_slice(lines, state.header_lines + 1), "\n")
         assert.truthy(tree_text:find("dir", 1, true))

@@ -469,7 +469,8 @@ local function render_header(state, total_add, total_del, replace_lines)
     local add_text = "+" .. total_add
     local del_text = "-" .. total_del
     local stat_text = add_text .. "  " .. del_text
-    local inner_width = math.max(0, width - 4)
+    -- One cell of margin on both sides, as in the bars on top of the windows.
+    local inner_width = math.max(0, width - 2)
     local stats_inner = fit_header_row(file_label, stat_text, inner_width)
     local range_kind = state.range_kind or "Range"
     local range_text = state.range_label or ""
@@ -477,50 +478,44 @@ local function render_header(state, total_add, total_del, replace_lines)
     local range_display = range_value_width > 0 and trim_to_width(range_text, range_value_width) or ""
     local range_inner = fit_header_row(range_kind, range_display, inner_width)
 
-    local rule = string.rep("─", math.max(0, width - 2))
-    local top_line = "╭" .. rule .. "╮"
-    local stats_line = "│ " .. stats_inner .. " │"
-    local range_line = "│ " .. range_inner .. " │"
+    local stats_line = " " .. stats_inner .. " "
+    local range_line = " " .. range_inner .. " "
+    -- A rule is a blank row underlined like the bars, one cell short of the
+    -- panel's edges. A blank row, so that a terminal drawing underlines in the
+    -- text colour draws it in one colour.
+    local rule_line = string.rep(" ", width)
 
-    local lines = { top_line }
-    local title_rows = {}
+    local lines = {}
+    local title_rows, rule_rows = {}, {}
     local function add_title_rows(text, hl_group)
         for _, row_text in ipairs(wrap_to_width(text or "", inner_width)) do
-            table.insert(lines, "│ " .. pad_to_width(row_text, inner_width) .. " │")
+            table.insert(lines, " " .. pad_to_width(row_text, inner_width) .. " ")
             title_rows[#lines - 1] = { row_text, hl_group }
         end
+    end
+    local function add_rule()
+        table.insert(lines, rule_line)
+        table.insert(rule_rows, #lines - 1)
     end
     add_title_rows(state.title, "DifftDiffTitle")
     if next(title_rows) then
         add_title_rows(state.subtitle, "DifftDiffSubtitle")
-    end
-    if next(title_rows) then
-        table.insert(lines, "├" .. rule .. "┤")
+        add_rule()
     end
     table.insert(lines, stats_line)
     local stats_row = #lines - 1
     table.insert(lines, range_line)
     local range_row = #lines - 1
-    table.insert(lines, "╰" .. rule .. "╯")
+    add_rule()
 
     vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, lines)
     state.header_lines = #lines
     state.tree_header_width = width
 
-    -- Frame: rows with side borders get those muted; the top and bottom rules and
-    -- the title divider are frame only.
-    local left_border_end = #"│"
-    local content_start = #"│ "
-    for row = 0, #lines - 1 do
-        local line = lines[row + 1]
-        if vim.startswith(line, "│") then
-            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", row, 0, left_border_end)
-            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", row, #line - #"│", -1)
-        else
-            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", row, 0, -1)
-        end
+    local content_start = #" "
+    for _, row in ipairs(rule_rows) do
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRule", row, content_start, math.max(content_start, width - 1))
     end
-
     for row, title in pairs(title_rows) do
         vim.api.nvim_buf_add_highlight(state.tree_buf, ns, title[2], row, content_start, content_start + #title[1])
     end
@@ -543,7 +538,7 @@ local function render_header(state, total_add, total_del, replace_lines)
     end
     local range_value_col = range_display ~= "" and range_line:find(range_display, 1, true) or nil
     if range_value_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", range_row, range_value_col - 1, #range_line - #" │")
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", range_row, range_value_col - 1, #range_line - #" ")
     end
 end
 

@@ -79,7 +79,7 @@ describe("header resize", function()
         difft.open("HEAD")
 
         local width = vim.api.nvim_win_get_width(difft.state.tree_win)
-        assert.are.same({ width, width, width, width }, header_widths())
+        assert.are.same({ width, width, width }, header_widths())
     end)
 
     for _, width in ipairs({ 60, 30 }) do
@@ -89,7 +89,7 @@ describe("header resize", function()
 
             resize(width)
 
-            assert.are.same({ width, width, width, width }, header_widths())
+            assert.are.same({ width, width, width }, header_widths())
             -- Header height and the tree rows' text are unchanged; only the padding up
             -- to the review marker column follows the width.
             local after = lines()
@@ -138,7 +138,7 @@ describe("header resize", function()
             assert.are.equal("", vim.wo[win].statuscolumn)
             assert.are.equal(0, vim.fn.getwininfo(win)[1].textoff)
             local width = vim.api.nvim_win_get_width(win)
-            assert.are.same({ width, width, width, width }, header_widths())
+            assert.are.same({ width, width, width }, header_widths())
         end)
     end)
 
@@ -153,7 +153,7 @@ describe("header resize", function()
         vim.api.nvim_exec_autocmds("WinResized", {})
 
         local width = vim.api.nvim_win_get_width(win) - 3
-        assert.are.same({ width, width, width, width }, header_widths())
+        assert.are.same({ width, width, width }, header_widths())
     end)
 
     it("keeps long tree rows on one line in a narrow panel", function()
