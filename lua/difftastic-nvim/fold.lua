@@ -53,21 +53,46 @@ function M.ranges(rows, hunk_starts, context, min_size)
     return ranges
 end
 
---- Fold text of a closed fold.
---- @return table[] Chunks of text and highlight group
---- A rule of the window's fold fill character with the count centred in it:
---- "━━━━ ▸ 42 unchanged lines ━━━━…".
+--- A closed fold's line for a text area `width` columns wide: the count centred
+--- in a rule of `fill`, "━━━━ ▸ 42 unchanged lines ━━━━". When that leaves
+--- fewer than two fill characters a side, it shortens to "━━ ▸ 42 unchanged ━━"
+--- (same rule), then to "━━ ▸ 42 ━━", whose rule narrows evenly on both sides
+--- down to "▸ 42" and then "42".
+--- Neovim fills the line past the returned text with the fill character, so a
+--- form without a rule is padded with spaces to the full width.
+--- @param count number Folded lines
+--- @param width number Columns of the text area
+--- @param fill string Fill character
+--- @return string
+function M.label(count, width, fill)
+    local function centred(text, pad)
+        local left = math.floor((width - vim.fn.strdisplaywidth(text)) / 2)
+        return pad:rep(left) .. text
+    end
+    -- Each form with the fill characters it needs on each side.
+    local forms = {
+        { (" ▸ %d unchanged line%s "):format(count, count == 1 and "" or "s"), 2 },
+        { (" ▸ %d unchanged "):format(count), 2 },
+        { (" ▸ %d "):format(count), 1 },
+    }
+    for _, form in ipairs(forms) do
+        if width >= vim.fn.strdisplaywidth(form[1]) + 2 * form[2] then
+            return centred(form[1], fill)
+        end
+    end
+    local bare = ("▸ %d"):format(count)
+    local text = width >= vim.fn.strdisplaywidth(bare) and bare or tostring(count)
+    local padded = centred(text, " ")
+    return padded .. (" "):rep(width - vim.fn.strdisplaywidth(padded))
+end
+
+--- Fold text of a closed fold (see `M.label`).
 --- @return table[] Chunks of text and highlight group
 function M.text()
     local count = vim.v.foldend - vim.v.foldstart + 1
     local fill = vim.opt_local.fillchars:get().fold or "="
-    local label = (" ▸ %d unchanged line%s "):format(count, count == 1 and "" or "s")
-    -- Centred in the text area; Neovim fills the rest of the line with the fill
-    -- character.
     local info = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1]
-    local width = info.width - info.textoff
-    local left = math.max(2, math.floor((width - vim.fn.strdisplaywidth(label)) / 2))
-    return { { fill:rep(left) .. label, "DifftFold" } }
+    return { { M.label(count, info.width - info.textoff, fill), "DifftFold" } }
 end
 
 local FOLD_OPTIONS = { "foldmethod", "foldenable", "foldminlines", "foldtext", "foldlevel", "fillchars", "winhighlight" }
