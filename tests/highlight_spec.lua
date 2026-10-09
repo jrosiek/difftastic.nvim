@@ -165,6 +165,75 @@ describe("derived highlight groups", function()
     end)
 end)
 
+describe("derived highlight groups with NvChad", function()
+    it("follow a theme NvChad switches to (User NvThemeReload, no ColorScheme)", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({
+            "nvim",
+            "--clean",
+            "--headless",
+            "--embed",
+            "--cmd",
+            "set rtp^=" .. root,
+        }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("require('difftastic-nvim.highlight').setup({})")
+        -- base46 sets the groups directly, then fires its own event.
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); vim.api.nvim_set_hl(0, 'Comment', { fg = '#555650' })")
+        local before = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        remote("vim.api.nvim_exec_autocmds('User', { pattern = 'NvThemeReload' })")
+        -- Derived on the next tick.
+        remote("vim.wait(50)")
+        local after = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        vim.fn.jobstop(child)
+
+        assert.are_not.equal("#555650", hex(before))
+        assert.are.equal("#555650", hex(after))
+    end)
+
+    it("catch up on the next window switch with colours set after the event", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed", "--cmd", "set rtp^=" .. root }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("require('difftastic-nvim.highlight').setup({}); vim.cmd('vsplit')")
+        -- The event fires while the old colours are still in place (NvChad's
+        -- picker), the new ones arrive afterwards.
+        remote("vim.api.nvim_exec_autocmds('User', { pattern = 'NvThemeReload' }); vim.wait(50)")
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); vim.api.nvim_set_hl(0, 'Comment', { fg = '#555650' })")
+        local stale = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        remote("vim.cmd('wincmd w')")
+        local fresh = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        vim.fn.jobstop(child)
+
+        assert.are_not.equal("#555650", hex(stale))
+        assert.are.equal("#555650", hex(fresh))
+    end)
+end)
+
+describe("derived highlight groups and window highlights", function()
+    it("ignore the current window's winhighlight when reading the theme", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed", "--cmd", "set rtp^=" .. root }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); require('difftastic-nvim.highlight').setup({})")
+        local before = remote("return { vim.api.nvim_get_hl(0, { name = 'DifftTreeFile' }), vim.api.nvim_get_hl(0, { name = 'DifftAdded' }) }")
+        -- A window like the side panel, whose Normal is a background-only group.
+        remote("vim.cmd('vsplit'); vim.wo.winhighlight = 'Normal:DifftTreeNormal,NormalNC:DifftTreeNormal'; vim.cmd('wincmd w'); vim.cmd('wincmd w')")
+        remote("require('difftastic-nvim.highlight').refresh()")
+        local after = remote("return { vim.api.nvim_get_hl(0, { name = 'DifftTreeFile' }), vim.api.nvim_get_hl(0, { name = 'DifftAdded' }) }")
+        vim.fn.jobstop(child)
+
+        assert.are.equal("#f8f8f2", hex(before[1].fg))
+        assert.are.same(before, after)
+    end)
+end)
+
 describe("derived highlight groups at startup", function()
     it("follow a theme the config applies after setup(), without a ColorScheme event", function()
         local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")

@@ -33,11 +33,36 @@ local function blend(fg, bg, alpha)
     return string.format("#%02x%02x%02x", r, g, b)
 end
 
+--- The global definition of a highlight group, links followed.
+---
+--- The obvious read, `nvim_get_hl(0, { name = name, link = false })`, is not
+--- global: resolving the final group goes through the current window's
+--- 'winhighlight' (a window highlight namespace). With the side panel current,
+--- whose 'winhighlight' maps Normal to DifftTreeNormal, it returns that
+--- background-only group for `Normal`, and colours derived from it are wrong
+--- (seen on Neovim 0.11.5). The same happens with `create = false` and with
+--- `synIDattr(synIDtrans(hlID(name)), ...)`; `nvim_set_hl_ns(0)` around the
+--- read does not help, as the active namespace already is 0. A read without
+--- `link = false` returns the raw global entry (a link stays a link), so links
+--- are followed here one step at a time.
+--- @param name string Highlight group name
+--- @return table
+local function global_hl(name)
+    for _ = 1, 100 do
+        local hl = vim.api.nvim_get_hl(0, { name = name })
+        if not hl.link then
+            return hl
+        end
+        name = hl.link
+    end
+    return {}
+end
+
 --- Get the foreground color from a highlight group.
 --- @param name string Highlight group name
 --- @return string|nil Hex color or nil
 local function get_fg(name)
-    local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
+    local hl = global_hl(name)
     if hl.fg then
         return string.format("#%06x", hl.fg)
     end
@@ -47,7 +72,7 @@ end
 --- Get the background color from Normal or fallback.
 --- @return string Hex color
 local function get_normal_bg()
-    local hl = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+    local hl = global_hl("Normal")
     if hl.bg then
         return string.format("#%06x", hl.bg)
     end
@@ -81,7 +106,23 @@ M.linked = {
 
 --- Apply all highlight groups.
 --- @param overrides table<string, vim.api.keyset.highlight> User overrides
+--- The theme colours the derived groups were last made from.
+local derived_from = nil
+
+--- The theme colours the derived groups are made from, as one comparable string.
+local function source_colors()
+    local plugin = package.loaded["difftastic-nvim"]
+    local accent = plugin and plugin.config and plugin.config.fold_accent or "Directory"
+    local parts = {}
+    for _, name in ipairs({ "Normal", "Comment", "Added", "Removed", "Changed", "Identifier", "Directory", accent }) do
+        local hl = global_hl(name)
+        table.insert(parts, tostring(hl.fg) .. "/" .. tostring(hl.bg))
+    end
+    return table.concat(parts, ",")
+end
+
 local function apply_highlights(overrides)
+    derived_from = source_colors()
     -- Setup linked highlights
     for name, default in pairs(M.linked) do
         local hl = vim.tbl_extend("force", default, overrides[name] or {})
@@ -179,6 +220,36 @@ function M.setup(overrides)
         callback = function()
             apply_highlights(overrides)
         end,
+    })
+    local function refresh_if_changed()
+        if source_colors() ~= derived_from then
+            apply_highlights(overrides)
+        end
+    end
+    -- NvChad specific: its theme switcher (base46's load_all_highlights, used by
+    -- the `<leader>th` picker) sets the colours directly, without a ColorScheme
+    -- event, and then fires `User NvThemeReload`.
+    -- NvChad bug: while the picker is open, `Normal` still holds the previous
+    -- theme's colours when that event fires (switching ayu_dark -> ayu_light,
+    -- Normal's background was ayu_dark's #14171d during the event). The new
+    -- colours arrive after it, and the final ones only once the picker closes.
+    -- Deriving on the event alone therefore left the groups one theme behind.
+    -- So the groups are derived on the next tick instead, and once more when
+    -- the picker closes and another window is entered (see WinEnter below).
+    -- Without NvChad nothing fires that event, so this autocmd never runs.
+    vim.api.nvim_create_autocmd("User", {
+        group = vim.api.nvim_create_augroup("DifftHighlightsNvChad", { clear = true }),
+        pattern = "NvThemeReload",
+        callback = function()
+            vim.schedule(refresh_if_changed)
+        end,
+    })
+    -- Any theme change made without an event (NvChad's picker settling, other
+    -- loaders) shows by the next window switch: derive the groups again if the
+    -- theme colours differ from the ones they were made from.
+    vim.api.nvim_create_autocmd("WinEnter", {
+        group = vim.api.nvim_create_augroup("DifftHighlightsCheck", { clear = true }),
+        callback = refresh_if_changed,
     })
     -- Once the whole config has run, in case its theme was applied after setup()
     -- without a ColorScheme event.
