@@ -12,18 +12,12 @@ local GLYPHS = {
     expanded = "",
     collapsed = "",
     file = "  ",
-    added = "+",
-    deleted = "-",
-    changed = "●",
-    renamed = "➜",
 }
 
 -- Each diff keeps its panel in its state: `tree` (the NuiTree), `tree_row_width`
--- (display width rows are cut to; nil leaves them whole), `tree_header_width`
+-- (display width rows are cut to; nil leaves them whole), `tree_header_width`,
+-- `header_lines` (height of the header box, which grows with the diff's title)
 -- and the totals `total_additions` / `total_deletions`.
-
---- Number of header lines (title + summary + range + divider)
-M.header_lines = 4
 
 --- @return table Tree configuration
 local function get_config()
@@ -44,19 +38,8 @@ local function get_file_icon(filename)
 end
 
 local function status_icon(node)
-    if node.moved_from then
-        return GLYPHS.renamed, "DifftTreeRenamed"
-    end
-    if node.status == "created" then
-        return GLYPHS.added, "DifftTreeAdded"
-    end
-    if node.status == "deleted" then
-        return GLYPHS.deleted, "DifftTreeDeleted"
-    end
-    if node.additions > 0 or node.deletions > 0 then
-        return GLYPHS.changed, "DifftTreeModified"
-    end
-    return " ", "DifftTreeMuted"
+    local glyph, hl_group = require("difftastic-nvim.diff").file_status(node)
+    return glyph, hl_group
 end
 
 local function append_stat_chip(line, additions, deletions)
@@ -104,9 +87,49 @@ local function trim_to_width(text, width)
     return result .. ellipsis
 end
 
+--- Cut text to `width` display cells keeping its end, with "…" at the start.
+local function trim_start_to_width(text, width)
+    if display_width(text) <= width then
+        return text
+    end
+    if width <= 0 then
+        return ""
+    end
+    local chars = vim.fn.strchars(text)
+    local take = chars
+    while take > 0 and display_width("…" .. vim.fn.strcharpart(text, chars - take)) > width do
+        take = take - 1
+    end
+    return "…" .. vim.fn.strcharpart(text, chars - take)
+end
+
+--- The rows of the header's range: the kind on the left and the range on the
+--- right. A range too long for one row continues after its arrow on a second
+--- row; a side still too long for its row is cut at its start, keeping its end.
+--- @param kind string e.g. "Base/Head"
+--- @param text string e.g. "main → feature"
+--- @param width number Width inside the margins
+--- @return table[] `{ kind, value }` per row (`kind` empty on a second row)
+local function range_rows(kind, text, width)
+    local room = math.max(0, width - display_width(kind) - 1)
+    if display_width(text) <= room then
+        return { { kind, text } }
+    end
+    for _, sep in ipairs({ " → ", " … " }) do
+        local at = text:find(sep, 1, true)
+        if at then
+            local base = text:sub(1, at - 1) .. sep:gsub(" $", "")
+            local head = text:sub(at + #sep)
+            return { { kind, trim_start_to_width(base, room) }, { "", trim_start_to_width(head, width) } }
+        end
+    end
+    return { { kind, room > 0 and trim_to_width(text, room) or "" } }
+end
+
 local function fit_header_row(left, right, width)
     local gap = width - display_width(left) - display_width(right)
-    if gap < 1 then
+    -- Without a left part, the right part may take the whole width.
+    if gap < (left == "" and 0 or 1) then
         local right_width = math.max(0, width - display_width(left) - 1)
         if right_width > 0 then
             return fit_header_row(left, trim_to_width(right, right_width), width)
@@ -117,18 +140,47 @@ local function fit_header_row(left, right, width)
     return left .. string.rep(" ", gap) .. right
 end
 
-local function header_border(width, title)
-    local title_text = title and (" " .. title .. " ") or ""
-    local inner_width = math.max(0, width - 2)
-    local title_width = display_width(title_text)
-
-    if title_width == 0 or title_width >= inner_width then
-        return "╭" .. string.rep("─", inner_width) .. "╮"
+--- Wrap text to lines of at most `width` display cells. Breaks at spaces and at
+--- explicit newlines; a word longer than the width is split.
+--- @param text string
+--- @param width number
+--- @return string[]
+local function wrap_to_width(text, width)
+    local result = {}
+    if width <= 0 then
+        return result
     end
-
-    local left = math.floor((inner_width - title_width) / 2)
-    local right = inner_width - title_width - left
-    return "╭" .. string.rep("─", left) .. title_text .. string.rep("─", right) .. "╮"
+    for _, paragraph in ipairs(vim.split(text, "\n", { plain = true })) do
+        local line = ""
+        for word in paragraph:gmatch("%S+") do
+            while display_width(word) > width do
+                if line ~= "" then
+                    table.insert(result, line)
+                    line = ""
+                end
+                local take = vim.fn.strchars(word)
+                while take > 1 and display_width(vim.fn.strcharpart(word, 0, take)) > width do
+                    take = take - 1
+                end
+                table.insert(result, vim.fn.strcharpart(word, 0, take))
+                word = vim.fn.strcharpart(word, take)
+            end
+            if word ~= "" then
+                if line == "" then
+                    line = word
+                elseif display_width(line) + 1 + display_width(word) <= width then
+                    line = line .. " " .. word
+                else
+                    table.insert(result, line)
+                    line = word
+                end
+            end
+        end
+        if line ~= "" then
+            table.insert(result, line)
+        end
+    end
+    return result
 end
 
 --- Build an intermediate tree structure from flat file list.
@@ -399,7 +451,36 @@ function M.hide_text_columns(win)
     vim.wo[win].statuscolumn = ""
 end
 
+--- Create the nui tree from `state.tree_root` and render it right below the header.
+--- @param state table Plugin state
+--- @param collapsed table<string, boolean> Directory node ids to render collapsed
+local function build_nui_tree(state, collapsed)
+    state.tree = NuiTree({
+        bufnr = state.tree_buf,
+        nodes = convert_to_nui_nodes(state.tree_root),
+        prepare_node = function(node)
+            return prepare_node(node, state)
+        end,
+    })
+    state.tree:render(state.header_lines + 1)
+    -- Collapsed after the first render: nui maps rows to nodes wrongly when nodes
+    -- are collapsed before it.
+    if next(collapsed) then
+        for id in pairs(collapsed) do
+            local node = state.tree:get_node(id)
+            if node then
+                node:collapse()
+            end
+        end
+        state.tree:render()
+    end
+end
+
 --- Render the header with totals, sized to the tree window.
+---
+--- With a title (`state.title`, then `state.subtitle`) the box has two parts:
+--- the wrapped title and subtitle on top, then a divider, then the file count
+--- and range rows.
 --- @param state table Plugin state
 --- @param total_add number Total additions
 --- @param total_del number Total deletions
@@ -411,7 +492,7 @@ local function render_header(state, total_add, total_del, replace_lines)
     end
 
     local ns = vim.api.nvim_create_namespace("difft-tree-header")
-    vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, 0, M.header_lines)
+    vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, 0, state.header_lines or 0)
 
     local file_count = #(state.files or {})
     local file_label = file_count == 1 and "1 file" or (file_count .. " files")
@@ -428,58 +509,77 @@ local function render_header(state, total_add, total_del, replace_lines)
     local add_text = "+" .. total_add
     local del_text = "-" .. total_del
     local stat_text = add_text .. "  " .. del_text
-    local inner_width = math.max(0, width - 4)
+    -- One cell of margin on both sides, as in the bars on top of the windows.
+    local inner_width = math.max(0, width - 2)
     local stats_inner = fit_header_row(file_label, stat_text, inner_width)
     local range_kind = state.range_kind or "Range"
-    local range_text = state.range_label or ""
-    local range_value_width = math.max(0, inner_width - display_width(range_kind) - 1)
-    local range_display = range_value_width > 0 and trim_to_width(range_text, range_value_width) or ""
-    local range_inner = fit_header_row(range_kind, range_display, inner_width)
+    local ranges = range_rows(range_kind, state.range_label or "", inner_width)
 
-    local top_line = header_border(width, "Difftastic")
-    local stats_line = "│ " .. stats_inner .. " │"
-    local range_line = "│ " .. range_inner .. " │"
-    local bottom_line = "╰" .. string.rep("─", math.max(0, width - 2)) .. "╯"
+    local stats_line = " " .. stats_inner .. " "
+    -- A rule is a blank row underlined like the bars, one cell short of the
+    -- panel's edges. A blank row, so that a terminal drawing underlines in the
+    -- text colour draws it in one colour.
+    local rule_line = string.rep(" ", width)
 
-    vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, { top_line, stats_line, range_line, bottom_line })
+    local lines = {}
+    local title_rows, rule_rows = {}, {}
+    local function add_title_rows(text, hl_group)
+        for _, row_text in ipairs(wrap_to_width(text or "", inner_width)) do
+            table.insert(lines, " " .. pad_to_width(row_text, inner_width) .. " ")
+            title_rows[#lines - 1] = { row_text, hl_group }
+        end
+    end
+    local function add_rule()
+        table.insert(lines, rule_line)
+        table.insert(rule_rows, #lines - 1)
+    end
+    add_title_rows(state.title, "DifftDiffTitle")
+    if next(title_rows) then
+        add_title_rows(state.subtitle, "DifftDiffSubtitle")
+        add_rule()
+    end
+    table.insert(lines, stats_line)
+    local stats_row = #lines - 1
+    local range_first_row = #lines
+    for _, row in ipairs(ranges) do
+        table.insert(lines, " " .. fit_header_row(row[1], row[2], inner_width) .. " ")
+    end
+    add_rule()
+
+    vim.api.nvim_buf_set_lines(state.tree_buf, 0, replace_lines or 0, false, lines)
+    state.header_lines = #lines
     state.tree_header_width = width
 
-    local title_start = top_line:find("Difftastic", 1, true)
-    if title_start then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 0, 0, -1)
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeTitle", 0, title_start - 1, title_start + #"Difftastic" - 1)
+    local content_start = #" "
+    for _, row in ipairs(rule_rows) do
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRule", row, content_start, math.max(content_start, width - 1))
+    end
+    for row, title in pairs(title_rows) do
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, title[2], row, content_start, content_start + #title[1])
     end
 
-    local left_border_end = #"│"
-    local content_start = #"│ "
-    local right_border_start = #stats_line - #"│"
-
-    vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 1, 0, left_border_end)
     local file_label_col = stats_line:find(file_label, 1, true)
     if file_label_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", 1, file_label_col - 1, file_label_col + #file_label - 1)
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", stats_row, file_label_col - 1, file_label_col + #file_label - 1)
     end
     local add_col = stats_line:find(add_text, 1, true)
     if add_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftFileAdded", 1, add_col - 1, add_col + #add_text - 1)
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftFileAdded", stats_row, add_col - 1, add_col + #add_text - 1)
     end
     local del_col = stats_line:find(del_text, add_col and (add_col + #add_text) or 1, true)
     if del_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftFileDeleted", 1, del_col - 1, del_col + #del_text - 1)
+        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftFileDeleted", stats_row, del_col - 1, del_col + #del_text - 1)
     end
-    vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 1, right_border_start, -1)
-    local range_right_border_start = #range_line - #"│"
-    vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 2, 0, left_border_end)
-    local range_kind_col = range_line:find(range_kind, 1, true)
-    if range_kind_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", 2, range_kind_col - 1, range_kind_col + #range_kind - 1)
+    for i, row in ipairs(ranges) do
+        local line_nr = range_first_row + i - 1
+        local line = lines[line_nr + 1]
+        if row[1] ~= "" then
+            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeMuted", line_nr, 1, 1 + #row[1])
+        end
+        if row[2] ~= "" then
+            vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", line_nr, #line - 1 - #row[2], #line - 1)
+        end
     end
-    local range_value_col = range_display ~= "" and range_line:find(range_display, 1, true) or nil
-    if range_value_col then
-        vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeRange", 2, range_value_col - 1, #range_line - #" │")
-    end
-    vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 2, range_right_border_start, -1)
-    vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 3, 0, -1)
 end
 
 --- Show the side panel in the current window, at the configured width.
@@ -487,6 +587,7 @@ end
 function M.open(state)
     state.tree_win = vim.api.nvim_get_current_win()
     state.tree_buf = vim.api.nvim_create_buf(false, true)
+    require("difftastic-nvim.diff").name_buffer(state, state.tree_buf, "panel")
     vim.api.nvim_win_set_buf(state.tree_win, state.tree_buf)
     vim.api.nvim_win_set_width(state.tree_win, get_config().width)
 
@@ -503,6 +604,8 @@ function M.open(state)
         "NormalNC:DifftTreeNormal",
         "EndOfBuffer:DifftTreeEndOfBuffer",
         "CursorLine:DifftTreeCursorLine",
+        "WinBar:DifftBar",
+        "WinBarNC:DifftBarNC",
     }, ",")
 
     vim.bo[state.tree_buf].buftype = "nofile"
@@ -520,24 +623,12 @@ function M.open(state)
     -- Store totals for header
     state.total_additions = root.additions
     state.total_deletions = root.deletions
+    state.tree_root = root
 
-    -- Convert to nui nodes
-    local nui_nodes = convert_to_nui_nodes(root)
-
-    -- Render header first
+    -- Render header first, then the tree below it
     render_header(state, root.additions, root.deletions)
-
-    -- Create nui tree (starts after header)
-    state.tree = NuiTree({
-        bufnr = state.tree_buf,
-        nodes = nui_nodes,
-        prepare_node = function(node)
-            return prepare_node(node, state)
-        end,
-    })
-
     state.tree_row_width = M.text_width(state.tree_win)
-    state.tree:render(M.header_lines + 1)
+    build_nui_tree(state, {})
 
     -- Redraw the header box and the rows when the tree window changes width.
     require("difftastic-nvim").diff_autocmd(state, "DifftTreeResize", "WinResized", {
@@ -609,7 +700,28 @@ function M.refresh_header(state)
     local buf = vim.bo[state.tree_buf]
     local modifiable, readonly = buf.modifiable, buf.readonly
     buf.modifiable, buf.readonly = true, false
-    render_header(state, state.total_additions or 0, state.total_deletions or 0, M.header_lines)
+    -- A wrapped title can change the header height. nui keeps the tree's line range
+    -- internally, so the tree is then rebuilt below the new header, keeping
+    -- collapsed directories and the node under the cursor.
+    local old_height = state.header_lines
+    local cursor_node = state.tree and vim.api.nvim_win_is_valid(state.tree_win)
+        and state.tree:get_node(vim.api.nvim_win_get_cursor(state.tree_win)[1])
+    render_header(state, state.total_additions or 0, state.total_deletions or 0, old_height)
+    if state.tree and state.header_lines ~= old_height then
+        local collapsed = {}
+        for id, node in pairs(state.tree.nodes.by_id) do
+            if node:has_children() and not node:is_expanded() then
+                collapsed[id] = true
+            end
+        end
+        vim.api.nvim_buf_set_lines(state.tree_buf, state.header_lines, -1, false, {})
+        build_nui_tree(state, collapsed)
+        M.highlight_current(state)
+        local _, linenr = state.tree:get_node(cursor_node and cursor_node:get_id() or "")
+        if linenr then
+            vim.api.nvim_win_set_cursor(state.tree_win, { linenr, 0 })
+        end
+    end
     buf.modifiable, buf.readonly = modifiable, readonly
 end
 
@@ -759,11 +871,11 @@ function M.highlight_current(state)
     if not state.tree or not state.tree_buf then return end
 
     local ns = vim.api.nvim_create_namespace("difft-tree-current")
-    vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, M.header_lines, -1)
+    vim.api.nvim_buf_clear_namespace(state.tree_buf, ns, state.header_lines, -1)
 
     -- Find the line number by iterating through rendered lines (after header)
     local line_count = vim.api.nvim_buf_line_count(state.tree_buf)
-    for linenr = M.header_lines + 1, line_count do
+    for linenr = state.header_lines + 1, line_count do
         local node = state.tree:get_node(linenr)
         if node and node.file_idx == state.current_file_idx then
             vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeCurrent", linenr - 1, 0, -1)

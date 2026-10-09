@@ -42,6 +42,7 @@ local function floats(tabpage)
             end
             table.insert(result, {
                 text = vim.trim(table.concat(lines, "\n")),
+                lines = lines,
                 title = config.title,
                 title_pos = config.title_pos,
                 border = config.border,
@@ -216,17 +217,21 @@ describe("loading screen", function()
         difft.open("HEAD~3..HEAD")
 
         local float = seen.floats[1]
-        -- "Loading…" centred in the rounded top border, in the title style.
-        assert.are.same({ { " Loading… ", "DifftTreeTitle" } }, float.title)
-        assert.are.equal("center", float.title_pos)
-        assert.are.same({ "╭", "─", "╮", "│", "╯", "─", "╰", "│" }, float.border)
-        -- The range row: muted kind, range in the box's range colour.
-        assert.are.equal("Base/Head  HEAD~3 → HEAD", float.text)
+        -- No border: a bar on top, the range row, and a rule, as in the panel.
+        assert.is_nil(float.title)
+        -- Neovim reports no border as nothing, "none" or empty parts, by version.
+        local border = float.border
+        assert.is_true(border == nil or border == "none" or (type(border) == "table" and table.concat(border) == ""), vim.inspect(border))
+        assert.are.equal(3, #float.lines)
+        assert.are.equal("DifftBar", float.groups[float.lines[1]])
+        assert.are.equal("Loading…", vim.trim(float.lines[1]))
+        -- The range row: muted kind, range in the panel's range colour.
+        assert.are.equal("Base/Head  HEAD~3 → HEAD", vim.trim(float.lines[2]))
         assert.are.equal("DifftTreeMuted", float.groups["Base/Head"])
         assert.are.equal("DifftTreeRange", float.groups["HEAD~3 → HEAD"])
-        -- Panel background, divider-coloured frame.
+        assert.are.equal("DifftTreeRule", float.groups[float.lines[3]:sub(2, -2)])
+        -- Panel background.
         assert.truthy(float.winhl:find("NormalFloat:DifftTreeNormal", 1, true))
-        assert.truthy(float.winhl:find("FloatBorder:DifftTreeDivider", 1, true))
     end)
 end)
 
@@ -279,8 +284,7 @@ describe("opening during startup", function()
     end
 
     local function centred(seen)
-        -- Border included: the window takes width + 2 columns.
-        return seen.col == math.floor((seen.columns - seen.width - 2) / 2)
+        return seen.col == math.floor((seen.columns - seen.width) / 2)
     end
 
     it("waits for a resize right after startup before opening", function()

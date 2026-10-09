@@ -101,15 +101,15 @@ describe("derived highlight groups", function()
     end)
 
     it("keep the overrides given to setup()", function()
-        highlight.setup({ DifftFold = { fg = "#123456" }, DifftTreeTitle = { fg = "#abcdef", bold = false } })
+        highlight.setup({ DifftFold = { fg = "#123456" }, DifftTreeCurrent = { fg = "#abcdef", bold = false } })
         apply_theme("#f8f8f2", "#272822", "#555650")
 
         difft.open("HEAD")
 
         assert.are.equal("#123456", hex(vim.api.nvim_get_hl(0, { name = "DifftFold" }).fg))
-        local title = vim.api.nvim_get_hl(0, { name = "DifftTreeTitle" })
-        assert.are.equal("#abcdef", hex(title.fg))
-        assert.is_nil(title.bold)
+        local current = vim.api.nvim_get_hl(0, { name = "DifftTreeCurrent" })
+        assert.are.equal("#abcdef", hex(current.fg))
+        assert.is_nil(current.bold)
         -- Groups without an override still follow the new theme.
         assert.are.equal("#555650", hex(vim.api.nvim_get_hl(0, { name = "DifftTreeMuted" }).fg))
     end)
@@ -255,5 +255,66 @@ describe("derived highlight groups at startup", function()
         vim.fn.jobstop(child)
 
         assert.are.equal("#555650", hex(fold))
+    end)
+end)
+
+describe("secondary text colour", function()
+    local highlight = require("difftastic-nvim.highlight")
+    local saved
+
+    before_each(function()
+        saved = {}
+        for _, name in ipairs({ "Normal", "NonText" }) do
+            saved[name] = vim.api.nvim_get_hl(0, { name = name })
+        end
+    end)
+
+    after_each(function()
+        for name, hl in pairs(saved) do
+            vim.api.nvim_set_hl(0, name, hl)
+        end
+        highlight.setup()
+    end)
+
+    local function fg(name)
+        return hex(vim.api.nvim_get_hl(0, { name = name, link = false }).fg)
+    end
+
+    it("is the text blended into the background, whatever NonText is", function()
+        -- monokai-pro gives NonText the background colour.
+        vim.api.nvim_set_hl(0, "Normal", { fg = "#fcfcfa", bg = "#2d2a2e" })
+        vim.api.nvim_set_hl(0, "NonText", { fg = "#2d2a2e" })
+        highlight.setup()
+        assert.are.equal("#8a8889", fg("DifftBarMuted"))
+        assert.are.equal("#8a8889", fg("DifftDiffSubtitle"))
+
+        vim.api.nvim_set_hl(0, "Normal", { fg = "#f8f8f2", bg = "#272822" })
+        vim.api.nvim_set_hl(0, "NonText", { fg = "#75715e" })
+        highlight.setup()
+        assert.are.equal("#85857f", fg("DifftBarMuted"))
+    end)
+end)
+
+describe("changed text", function()
+    local highlight = require("difftastic-nvim.highlight")
+
+    after_each(function()
+        highlight.setup()
+    end)
+
+    it("is underlined in the added or removed colour, half blended into the background", function()
+        vim.api.nvim_set_hl(0, "Normal", { fg = "#f8f8f2", bg = "#272822" })
+        vim.api.nvim_set_hl(0, "Added", { fg = "#96c367" })
+        vim.api.nvim_set_hl(0, "Removed", { fg = "#e36d76" })
+        highlight.setup()
+        local added = vim.api.nvim_get_hl(0, { name = "DifftAdded" })
+        local removed = vim.api.nvim_get_hl(0, { name = "DifftRemoved" })
+        assert.is_true(added.underline)
+        assert.are.equal("#5e7544", hex(added.sp))
+        assert.is_true(removed.underline)
+        assert.are.equal("#854a4c", hex(removed.sp))
+        -- The text keeps its own colour.
+        assert.is_nil(added.fg)
+        assert.is_nil(removed.fg)
     end)
 end)

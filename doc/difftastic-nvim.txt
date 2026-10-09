@@ -115,8 +115,14 @@ Downloaded binaries are stored in: >
 
                                                                    *:DifftUpdate*
 :DifftUpdate
-    Update the binary to the latest release. Only available when using
-    auto-download (`download = true`).
+    Download the binary for the installed plugin version, and `difft`, again.
+    Only available when using auto-download (`download = true`).
+
+                                                   *difftastic-nvim-health*
+:checkhealth difftastic-nvim
+    Show the library and the `difft` in use, where they come from (a local
+    build, a download or PATH) and their versions, and whether nui.nvim is
+    installed.
 
                                                                       *:DifftPick*
 :DifftPick
@@ -228,11 +234,22 @@ Set a keymap to `false` to disable it.
                                                        *difftastic-nvim-download*
 download ~
     When true, automatically downloads a pre-built binary for your platform
-    from GitHub releases if no local build is found. Binaries are cached in
+    from GitHub releases if no local build is found. It comes from the
+    GitHub repository the plugin was cloned from (so a fork gets its own
+    releases), else from clabby/difftastic.nvim: the newest release at or
+    before the installed plugin version, or the latest release when the
+    plugin is not a git clone. Binaries are cached in
     `vim.fn.stdpath("data") .. "/difftastic-nvim"`.
 
-    When enabled, the plugin also checks for updates on startup and notifies
-    you if a newer version is available. Use |:DifftUpdate| to update.
+    On startup the plugin checks that the cached binary is the one for the
+    installed plugin version, from the same repository, and downloads it
+    again when it is not (e.g. after the plugin was updated).
+
+    It also downloads `difft` from the latest release of jrosiek/difftastic,
+    a difftastic build whose JSON output lists only the words that changed in
+    comments, strings and text, into the same directory, and uses it in place
+    of `difft` on PATH. Until it is there, or when it cannot be downloaded,
+    `difft` from PATH is used. |:DifftUpdate| downloads both again.
 
     Default: false
 
@@ -404,8 +421,8 @@ themes.
 
 Treesitter mode (background colors):
     Group                 Default                 Description ~
-    DifftAdded            Derived from `Added`    Added lines background
-    DifftRemoved          Derived from `Removed`  Removed lines background
+    DifftAdded            Derived from `Added`    Added text within a line (background, underline)
+    DifftRemoved          Derived from `Removed`  Removed text within a line (background, underline)
     DifftAddedLine        Derived from `Added`    Lighter added line background
     DifftRemovedLine      Derived from `Removed`  Lighter removed line background
 
@@ -428,10 +445,15 @@ Tree highlights:
     DifftTreeMuted        Derived from `Comment`  Tree hints and separators
     DifftTreeIndent       Derived from `Comment`  Tree indent guide
     DifftTreeChevron      Derived from `Comment`  Directory expand/collapse chevron
-    DifftTreeTitle        Derived from `Normal`   Tree header title
-    DifftTreeDivider      Derived from `Comment`  Tree header divider
-    DifftTreeRange        Links to `BlueItalic`   Tree header revset/base-head value
+    DifftDiffTitle        Links to `Title`        Title of the diffed commits in the tree header
+    DifftDiffSubtitle     Derived from `Normal`   Subtitle below it, e.g. the count of further commits
+    DifftTreeRule         Derived from `Normal`   Rules of the tree header and the loading window
+    DifftLoadingDone      Derived from the accent Percentage done in the loading window
+    DifftTreeRange        Derived from `Changed`  Tree header revset/base-head value
     DifftTreeNormal       Derived from `Normal`   Tree panel background
+    DifftBar              Derived from `Normal`   Bar on top of the focused panel or diff pane
+    DifftBarNC            Derived from `Normal`   Bar on top of the other windows of the view
+    DifftBarMuted         Derived from `Normal`   Secondary text in the bars, e.g. the directory
     DifftTreeCursorLine   Derived from `Normal`   Tree cursorline background
     DifftTreeCurrent      Derived from `Normal`   Current file highlight
 

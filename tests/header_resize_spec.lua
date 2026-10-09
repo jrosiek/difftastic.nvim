@@ -56,7 +56,7 @@ describe("header resize", function()
     local function header_widths()
         local widths = {}
         for i, line in ipairs(lines()) do
-            if i > tree.header_lines then
+            if i > difft.state.header_lines then
                 break
             end
             widths[i] = vim.fn.strdisplaywidth(line)
@@ -79,7 +79,7 @@ describe("header resize", function()
         difft.open("HEAD")
 
         local width = vim.api.nvim_win_get_width(difft.state.tree_win)
-        assert.are.same({ width, width, width, width }, header_widths())
+        assert.are.same({ width, width, width }, header_widths())
     end)
 
     for _, width in ipairs({ 60, 30 }) do
@@ -89,14 +89,14 @@ describe("header resize", function()
 
             resize(width)
 
-            assert.are.same({ width, width, width, width }, header_widths())
+            assert.are.same({ width, width, width }, header_widths())
             -- Header height and the tree rows' text are unchanged; only the padding up
             -- to the review marker column follows the width.
             local after = lines()
             assert.are.equal(#before, #after)
             local function text(rows)
                 local result = {}
-                for i, row in ipairs(vim.list_slice(rows, tree.header_lines + 1)) do
+                for i, row in ipairs(vim.list_slice(rows, difft.state.header_lines + 1)) do
                     local marker = vim.fn.strcharpart(row, vim.fn.strchars(row) - 1, 1)
                     result[i] = { (vim.fn.strcharpart(row, 0, vim.fn.strchars(row) - 1):gsub("%s+$", "")), marker }
                 end
@@ -138,7 +138,7 @@ describe("header resize", function()
             assert.are.equal("", vim.wo[win].statuscolumn)
             assert.are.equal(0, vim.fn.getwininfo(win)[1].textoff)
             local width = vim.api.nvim_win_get_width(win)
-            assert.are.same({ width, width, width, width }, header_widths())
+            assert.are.same({ width, width, width }, header_widths())
         end)
     end)
 
@@ -153,7 +153,7 @@ describe("header resize", function()
         vim.api.nvim_exec_autocmds("WinResized", {})
 
         local width = vim.api.nvim_win_get_width(win) - 3
-        assert.are.same({ width, width, width, width }, header_widths())
+        assert.are.same({ width, width, width }, header_widths())
     end)
 
     it("keeps long tree rows on one line in a narrow panel", function()
@@ -189,7 +189,7 @@ describe("header resize", function()
         end)
 
         local function tree_rows()
-            return vim.list_slice(lines(), tree.header_lines + 1)
+            return vim.list_slice(lines(), difft.state.header_lines + 1)
         end
 
         it("ends a row that does not fit with an ellipsis", function()

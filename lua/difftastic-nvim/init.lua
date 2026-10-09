@@ -9,6 +9,7 @@ local keymaps = require("difftastic-nvim.keymaps")
 local fold = require("difftastic-nvim.fold")
 
 local record_position -- defined with the per-file positions below
+local open_now, wait_for_downloads -- defined with open() below
 
 --- Default configuration
 M.config = {
@@ -249,6 +250,49 @@ function M.setup(opts)
     binary.ensure_exists(M.config.download)
 end
 
+--- Whether a diff view's windows are still there (the side panel always is while
+--- it is open; a pane is closed while a file has one side only).
+--- @param state table Diff state
+local function view_open(state)
+    return state.tree_win ~= nil and vim.api.nvim_win_is_valid(state.tree_win)
+end
+
+--- Whether both diff panes are shown.
+--- @param state table Diff state
+local function both_panes(state)
+    return state.left_win ~= nil
+        and state.right_win ~= nil
+        and vim.api.nvim_win_is_valid(state.left_win)
+        and vim.api.nvim_win_is_valid(state.right_win)
+end
+
+--- The widths of the base and head panes.
+local function pane_widths(state)
+    return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+end
+
+--- Remember the widths the plugin itself gave the panes, so that its own resizes
+--- are not taken for a split the user dragged.
+local function remember_pane_widths(state)
+    if both_panes(state) then
+        state.pane_widths = { pane_widths(state) }
+    end
+end
+
+--- Split the space of the two panes in their ratio (`state.pane_ratio`), as
+--- after Neovim was resized or a pane was opened again.
+--- @param state table Diff state
+function M.restore_pane_split(state)
+    if not both_panes(state) then
+        return
+    end
+    local l, r = pane_widths(state)
+    -- The one way the panes' space is split; with an odd width, the base pane
+    -- gets the extra column.
+    vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * (state.pane_ratio or 0.5) + 0.5))
+    remember_pane_widths(state)
+end
+
 --- Keep the two diff panes in step where Neovim does not:
 --- - Resizing Neovim gives the whole change in width to the rightmost window. The
 ---   panes keep splitting the space next to the tree in their last ratio instead.
@@ -256,44 +300,54 @@ end
 --- - 'scrollbind' only follows the current window, so mouse-wheel scrolling the
 ---   other pane left its partner behind. Rows are aligned in both panes, so the
 ---   partner takes the same top line.
---- The autocmds remove themselves once the view is closed.
+--- The autocmds remove themselves once the view is closed. While a file shown has
+--- one side only (one pane), they leave the panes' ratio alone.
 --- @param state table Plugin state of the opened view
 local function setup_pane_sync(state)
     local function valid()
-        return state.left_win
-            and state.right_win
-            and vim.api.nvim_win_is_valid(state.left_win)
-            and vim.api.nvim_win_is_valid(state.right_win)
-    end
-    local function widths()
-        return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+        return both_panes(state)
     end
 
     -- The base pane's share of the space next to the tree, kept as a float so that
     -- repeated resizes do not round it away. The panes open evenly split.
     state.pane_ratio = 0.5
-    -- The widths the plugin itself gave the panes, so that its own resizes are not
-    -- taken for a split the user dragged.
-    local function remember_widths()
-        local l, r = widths()
-        state.pane_widths = { l, r }
-    end
+    remember_pane_widths(state)
     local pending = false
 
     local function apply_ratio()
-        local l, r = widths()
-        vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * state.pane_ratio + 0.5))
-        remember_widths()
+        M.restore_pane_split(state)
     end
-    remember_widths()
+
+    -- The side panel's width the user wants: the configured one, until the user
+    -- resizes the panel. A panel squeezed by a small Neovim (also one opened that
+    -- way) grows back to it when Neovim grows.
+    state.tree_width_wanted = state.tree_width_wanted or M.config.tree.width
+    local function note_tree_width()
+        state.tree_width_known = vim.api.nvim_win_get_width(state.tree_win)
+        state.columns_seen = vim.o.columns
+    end
+    local function restore_tree_width()
+        if vim.api.nvim_win_get_width(state.tree_win) < state.tree_width_wanted then
+            vim.api.nvim_win_set_width(state.tree_win, state.tree_width_wanted)
+        end
+        note_tree_width()
+    end
+    note_tree_width()
+
+    local function after_resize()
+        restore_tree_width()
+        if valid() then
+            apply_ratio()
+        end
+    end
 
     M.diff_autocmd(state, "DifftPaneSync", "VimResized", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true -- diff view closed: drop this autocmd
             end
             if vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
-                apply_ratio()
+                after_resize()
             else
                 -- Window sizes of another tab are only updated when it is entered.
                 pending = true
@@ -302,12 +356,12 @@ local function setup_pane_sync(state)
     })
     M.diff_autocmd(state, "DifftPaneSync", "TabEnter", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
             if pending and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
                 pending = false
-                apply_ratio()
+                after_resize()
             end
         end,
     })
@@ -316,7 +370,7 @@ local function setup_pane_sync(state)
     -- are put back in their ratio instead.
     M.diff_autocmd(state, "DifftPaneSync", "WinResized", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
             if pending then
@@ -330,15 +384,25 @@ local function setup_pane_sync(state)
                     panes_resized = true
                 end
             end
+            -- The panel resized while Neovim kept its size: by the user, whose
+            -- width it keeps from now on.
+            local tree_width = vim.api.nvim_win_get_width(state.tree_win)
+            if tree_resized and vim.o.columns == state.columns_seen and tree_width ~= state.tree_width_known then
+                state.tree_width_wanted = tree_width
+                note_tree_width()
+            end
+            if not valid() then
+                return
+            end
             if tree_resized then
                 apply_ratio()
             elseif panes_resized then
-                local l, r = widths()
+                local l, r = pane_widths(state)
                 local set = state.pane_widths
                 if not (set and set[1] == l and set[2] == r) then
                     -- Dragged by the user: the new split sets the ratio.
                     state.pane_ratio = l / (l + r)
-                    remember_widths()
+                    remember_pane_widths(state)
                 end
             end
         end,
@@ -347,7 +411,7 @@ local function setup_pane_sync(state)
     -- the other pane once Neovim is idle, whatever did it (keys, mouse, commands).
     M.diff_autocmd(state, "DifftPaneSync", "SafeState", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
             fold.sync(state)
@@ -355,8 +419,11 @@ local function setup_pane_sync(state)
     })
     M.diff_autocmd(state, "DifftPaneSync", "WinScrolled", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
+            end
+            if not valid() then
+                return
             end
             local scrolled = vim.v.event
             local left_scrolled = scrolled[tostring(state.left_win)] ~= nil
@@ -396,11 +463,13 @@ M.startup_settle_max_ms = 1000
 --- settled: a GUI may resize the grid right after startup (Neovide applies its
 --- scale factor then), and since computing the diff blocks Neovim, a resize
 --- arriving meanwhile would leave the view laid out for the old size.
+--- The directory is taken now, from the current window, not when the view opens.
 --- @param revset string|nil As for open()
 function M.open_when_ready(revset)
+    local opts = { cwd = vim.fn.getcwd() }
     if vim.v.vim_did_enter == 1 then
         vim.schedule(function()
-            M.open(revset)
+            M.open(revset, opts)
         end)
         return
     end
@@ -426,7 +495,7 @@ function M.open_when_ready(revset)
                 timer:stop()
                 timer:close()
                 pcall(vim.api.nvim_del_augroup_by_id, group)
-                M.open(revset)
+                M.open(revset, opts)
             end))
         end,
     })
@@ -446,45 +515,9 @@ local function center_loading(win, width, height)
         relative = "editor",
         width = width,
         height = height,
-        row = math.max(0, math.floor((vim.o.lines - height - 2) / 2)),
-        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+        row = math.max(0, math.floor((vim.o.lines - height) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width) / 2)),
     })
-end
-
---- Show a centred loading window over the current tab, styled like the side
---- panel's header box: "Loading…" in the top border and the range row below it.
---- @param kind string Range kind ("Base/Head", "Revset")
---- @param label string|nil Range label
---- @return number window
-local function show_loading(kind, label)
-    label = label or ""
-    local row = " " .. kind .. "  " .. label .. " "
-    local width = math.min(vim.fn.strdisplaywidth(row), math.max(1, vim.o.columns - 4))
-    local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { row })
-    local ns = vim.api.nvim_create_namespace("difft-loading")
-    vim.api.nvim_buf_set_extmark(buf, ns, 0, 1, { end_col = 1 + #kind, hl_group = "DifftTreeMuted" })
-    if label ~= "" then
-        local start = 1 + #kind + 2
-        vim.api.nvim_buf_set_extmark(buf, ns, 0, start, { end_col = start + #label, hl_group = "DifftTreeRange" })
-    end
-    vim.bo[buf].bufhidden = "wipe"
-    vim.bo[buf].modifiable = false
-    local win = vim.api.nvim_open_win(buf, false, {
-        relative = "editor",
-        width = width,
-        height = 1,
-        row = math.max(0, math.floor((vim.o.lines - 3) / 2)),
-        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
-        style = "minimal",
-        border = "rounded",
-        title = { { " Loading… ", "DifftTreeTitle" } },
-        title_pos = "center",
-        focusable = false,
-        noautocmd = true,
-    })
-    vim.wo[win].winhl = "NormalFloat:DifftTreeNormal,FloatBorder:DifftTreeDivider,FloatTitle:DifftTreeTitle"
-    return win
 end
 
 --- One row of `width` cells with a one-cell margin: `left` aligned left, `right`
@@ -506,29 +539,82 @@ local function spread(left, right, width)
     return " " .. left .. string.rep(" ", gap) .. right .. " ", 1 + #left + gap
 end
 
+--- Show a centred loading window over the current tab, styled like the side
+--- panel's header box: "Loading…" in the top border and the range row below it.
+--- @param kind string Range kind ("Base/Head", "Revset")
+--- @param label string|nil Range label
+--- @return number window
+local function show_loading(kind, label)
+    label = label or ""
+    local width = math.min(vim.fn.strdisplaywidth(" " .. kind .. "  " .. label .. " "), math.max(1, vim.o.columns - 4))
+    width = math.max(width, vim.fn.strdisplaywidth(" Loading… "))
+    local buf = vim.api.nvim_create_buf(false, true)
+    local range, range_start = spread(kind, label, width)
+    local bar = spread("Loading…", "", width)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { bar, range, string.rep(" ", width) })
+    -- The progress window's card (see draw_progress_box), without progress.
+    local ns = vim.api.nvim_create_namespace("difft-loading")
+    vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, { end_col = #bar, hl_group = "DifftBar", priority = 100 })
+    vim.api.nvim_buf_set_extmark(buf, ns, 1, 1, { end_col = 1 + #kind, hl_group = "DifftTreeMuted" })
+    if #range - 1 > range_start then
+        vim.api.nvim_buf_set_extmark(buf, ns, 1, range_start, { end_col = #range - 1, hl_group = "DifftTreeRange" })
+    end
+    vim.api.nvim_buf_set_extmark(buf, ns, 2, 1, { end_col = math.max(1, width - 1), hl_group = "DifftTreeRule" })
+    vim.bo[buf].bufhidden = "wipe"
+    vim.bo[buf].modifiable = false
+    local win = vim.api.nvim_open_win(buf, false, {
+        relative = "editor",
+        width = width,
+        height = 3,
+        row = math.max(0, math.floor((vim.o.lines - 3) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+        style = "minimal",
+        border = "none",
+        focusable = false,
+        noautocmd = true,
+    })
+    vim.wo[win].winhl = "NormalFloat:DifftTreeNormal"
+    return win
+end
+
 --- Draw a progress box's two rows at its window's width: the range kind left and
 --- the range right, then the progress numbers left (in the Directory colour) and
 --- the last message right (in normal text).
 --- @param box table From `show_progress_box`
+--- Frames of the spinner shown while the number of steps is not known.
+local SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
 local function draw_progress_box(box)
     if not vim.api.nvim_win_is_valid(box.win) then
         return
     end
     local width = vim.api.nvim_win_get_width(box.win)
+    local known = box.total and box.total > 0
+    -- The share done once the total is known; until then a spinner.
+    local percent = known and (math.floor(100 * box.count / box.total) .. "%")
+        or SPINNER[(box.spin or 0) % #SPINNER + 1]
+    local bar = spread("Loading…", percent, width)
     local range, range_start = spread(box.kind, box.label, width)
-    local progress = spread(box.numbers, box.message, width)
+    local progress = spread("", box.message, width)
     vim.bo[box.buf].modifiable = true
-    vim.api.nvim_buf_set_lines(box.buf, 0, -1, false, { range, progress })
+    vim.api.nvim_buf_set_lines(box.buf, 0, -1, false, { bar, range, progress, string.rep(" ", width) })
     vim.bo[box.buf].modifiable = false
     local ns = vim.api.nvim_create_namespace("difft-loading")
     vim.api.nvim_buf_clear_namespace(box.buf, ns, 0, -1)
-    vim.api.nvim_buf_set_extmark(box.buf, ns, 0, 1, { end_col = 1 + #box.kind, hl_group = "DifftTreeMuted" })
+    -- A bar on top like the windows' bars, and a rule below like the side panel
+    -- header's.
+    -- The bar and the rule lie under the text and progress highlights (lower
+    -- priority than the default 4096).
+    vim.api.nvim_buf_set_extmark(box.buf, ns, 0, 0, { end_col = #bar, hl_group = "DifftBar", priority = 100 })
+    if percent ~= "" then
+        vim.api.nvim_buf_set_extmark(box.buf, ns, 0, #bar - 1 - #percent, { end_col = #bar - 1, hl_group = "DifftLoadingDone" })
+    end
+    vim.api.nvim_buf_set_extmark(box.buf, ns, 1, 1, { end_col = 1 + #box.kind, hl_group = "DifftTreeMuted" })
     if #range - 1 > range_start then
-        vim.api.nvim_buf_set_extmark(box.buf, ns, 0, range_start, { end_col = #range - 1, hl_group = "DifftTreeRange" })
+        vim.api.nvim_buf_set_extmark(box.buf, ns, 1, range_start, { end_col = #range - 1, hl_group = "DifftTreeRange" })
     end
-    if box.numbers ~= "" then
-        vim.api.nvim_buf_set_extmark(box.buf, ns, 1, 1, { end_col = 1 + #box.numbers, hl_group = "Directory" })
-    end
+    local rule = math.max(0, width - 2)
+    vim.api.nvim_buf_set_extmark(box.buf, ns, 3, 1, { end_col = 1 + rule, hl_group = "DifftTreeRule", priority = 100 })
 end
 
 --- Show the loading window of a diff computed in the background, styled like
@@ -539,7 +625,7 @@ end
 ---   is the width wanted, before limiting it to the screen
 local function show_progress_box(kind, label)
     label = label or ""
-    local box = { kind = kind, label = label, numbers = "", message = "Starting…" }
+    local box = { kind = kind, label = label, count = 0, total = -1, message = "Starting…" }
     box.width = math.max(vim.fn.strdisplaywidth(" " .. kind .. "  " .. label .. " "), PROGRESS_WIDTH)
     local width = math.min(box.width, math.max(1, vim.o.columns - 4))
     box.buf = vim.api.nvim_create_buf(false, true)
@@ -547,28 +633,40 @@ local function show_progress_box(kind, label)
     box.win = vim.api.nvim_open_win(box.buf, false, {
         relative = "editor",
         width = width,
-        height = 2,
+        height = 4,
         row = math.max(0, math.floor((vim.o.lines - 4) / 2)),
-        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width) / 2)),
         style = "minimal",
-        border = "rounded",
-        title = { { " Loading… ", "DifftTreeTitle" } },
-        title_pos = "center",
+        border = "none",
         focusable = false,
         noautocmd = true,
     })
-    vim.wo[box.win].winhl = "NormalFloat:DifftTreeNormal,FloatBorder:DifftTreeDivider,FloatTitle:DifftTreeTitle"
+    vim.wo[box.win].winhl = "NormalFloat:DifftTreeNormal"
     draw_progress_box(box)
+    -- Turn the spinner until the total is known; stops with the window.
+    local timer = vim.uv.new_timer()
+    timer:start(100, 100, vim.schedule_wrap(function()
+        if not vim.api.nvim_win_is_valid(box.win) or (box.total and box.total > 0) then
+            if not timer:is_closing() then
+                timer:stop()
+                timer:close()
+            end
+            return
+        end
+        box.spin = (box.spin or 0) + 1
+        draw_progress_box(box)
+    end))
     return box
 end
 
---- Show progress in a progress box: "3/12 files" left, the last message right.
+--- Show progress in a progress box: the share done in its bar and rule, the
+--- last message below the range.
 --- @param box table From `show_progress_box`
 --- @param count number Steps done
 --- @param total number Steps in all, -1 while unknown
 --- @param message string What was done last; empty keeps the previous message
 local function show_progress(box, count, total, message)
-    box.numbers = total >= 0 and ("%d/%d files"):format(count, total) or ""
+    box.count, box.total = count, total
     if message ~= "" then
         box.message = message
     end
@@ -649,6 +747,12 @@ end
 local function drop(state)
     cancel_loading(state, false)
     delete_autocmds(state)
+    -- Pane buffers outlive their windows (see diff.set_panes): delete them.
+    for _, buf in ipairs({ state.left_buf, state.right_buf }) do
+        if buf and vim.api.nvim_buf_is_valid(buf) then
+            pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        end
+    end
     if diffs[state.diff_tabpage] == state then
         diffs[state.diff_tabpage] = nil
     end
@@ -685,8 +789,16 @@ end
 
 --- Build the diff view for computed files in the current tab, the diff tab.
 --- @param state table Diff state of the tab
-local function present(state, files, revset)
-    state.files = files
+--- @param result table The computed diff: `files`, the `title` and `subtitle`
+---   shown at the top of the side panel, if any, and for staged and working-tree
+---   diffs the `snapshot_time` the subtitle shows
+local function present(state, result, revset)
+    state.files = result.files
+    state.title, state.subtitle = result.title, result.subtitle
+    if result.snapshot_time then
+        local time = result.snapshot_time
+        state.subtitle = ("as of %d %s"):format(tonumber(os.date("%d", time)), os.date("%b %H:%M:%S", time))
+    end
     state.current_file_idx = 1
     state.range_kind, state.range_label = range_context(revset, M.config.vcs)
 
@@ -699,13 +811,12 @@ local function present(state, files, revset)
     tree.open(state)
     vim.api.nvim_set_current_win(state.right_win)
     -- Narrowing the panel gave its columns to the base pane: split evenly again.
-    local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
-    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
+    M.restore_pane_split(state)
     keymaps.setup(state)
 
     -- Remember the diff pane used last, so focus can return to it from the tree.
     local function track_pane()
-        if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+        if not view_open(state) then
             return true -- diff view closed: drop this autocmd
         end
         local win = vim.api.nvim_get_current_win()
@@ -726,7 +837,7 @@ local function present(state, files, revset)
     -- Keep the shown file's position current, not only when the file is left.
     M.diff_autocmd(state, "DifftPaneSide", "CursorMoved", {
         callback = function()
-            if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+            if not view_open(state) then
                 return true -- diff view closed: drop this autocmd
             end
             local win = vim.api.nvim_get_current_win()
@@ -744,6 +855,73 @@ local function present(state, files, revset)
     track_pane()
 
     setup_pane_sync(state)
+end
+
+--- Wait in the diff tab, with the loading window saying for what, until the
+--- downloads the diff needs (see binary.waiting_for) are done, then call
+--- `start` in that tab. The close key cancels it, as it cancels a diff loading.
+--- @param state table Diff state, its tab current
+--- @param revset string|nil
+--- @param start fun()
+function wait_for_downloads(state, revset, start)
+    local record = { tab = state.diff_tabpage, original_tab = state.original_tabpage, closed = false }
+    record.box = show_progress_box(range_context(revset, M.config.vcs))
+    record.win = record.box.win
+    show_progress(record.box, 0, -1, binary.waiting_for() or "")
+    if M.config.keymaps.close then
+        vim.keymap.set("n", M.config.keymaps.close, function()
+            M.close()
+        end, { buffer = vim.api.nvim_get_current_buf(), nowait = true, desc = "Cancel loading the diff" })
+    end
+    state.loading = record
+
+    local timer = vim.uv.new_timer()
+    local function stop()
+        if not timer:is_closing() then
+            timer:stop()
+            timer:close()
+        end
+    end
+    local function proceed()
+        state.loading = nil
+        delete_autocmds(record)
+        if vim.api.nvim_win_is_valid(record.win) then
+            vim.api.nvim_win_close(record.win, true)
+        end
+        -- The download may have failed, leaving nothing to run.
+        local missing = binary.state == "failed" and "Library not available. Check :messages for details."
+            or binary.missing_difft()
+        if missing then
+            leave_diff_tab(state)
+            vim.notify("difftastic-nvim: " .. missing, vim.log.levels.ERROR)
+            return
+        end
+        start()
+    end
+    timer:start(100, 100, vim.schedule_wrap(function()
+        if state.loading ~= record or record.closed then
+            return stop() -- cancelled
+        end
+        local waiting = binary.waiting_for()
+        if waiting then
+            show_progress(record.box, 0, -1, waiting)
+            return
+        end
+        stop()
+        if vim.api.nvim_get_current_tabpage() == record.tab then
+            proceed()
+        else
+            -- Windows are laid out in the current tab: wait until the diff tab is.
+            M.diff_autocmd(record, "DifftLoading", "TabEnter", {
+                callback = function()
+                    if vim.api.nvim_get_current_tabpage() == record.tab then
+                        proceed()
+                        return true
+                    end
+                end,
+            })
+        end
+    end))
 end
 
 --- Compute the diff while Neovim stays responsive: the loading window shows the
@@ -786,7 +964,7 @@ local function open_async(lib, revset, state)
             if vim.api.nvim_win_is_valid(record.win) then
                 vim.api.nvim_win_close(record.win, true)
             end
-            present(state, result.files, revset)
+            present(state, result, revset)
         end
         if vim.api.nvim_get_current_tabpage() == record.tab then
             build()
@@ -806,7 +984,7 @@ local function open_async(lib, revset, state)
     M.diff_autocmd(record, "DifftLoading", "VimResized", {
         callback = function()
             if vim.api.nvim_win_is_valid(record.win) then
-                center_loading(record.win, record.box.width, 2)
+                center_loading(record.win, record.box.width, vim.api.nvim_win_get_height(record.win))
                 draw_progress_box(record.box)
             end
         end,
@@ -817,7 +995,7 @@ local function open_async(lib, revset, state)
         end,
     })
 
-    local spec = { vcs = M.config.vcs, max_parallel = M.config.max_parallel_difft_calls }
+    local spec = { vcs = M.config.vcs, max_parallel = M.config.max_parallel_difft_calls, cwd = state.cwd }
     if revset == nil then
         spec.mode = "unstaged"
     elseif revset == "--staged" then
@@ -845,11 +1023,24 @@ end
 
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
-function M.open(revset)
+--- @param opts table|nil `cwd`: a directory inside the repository to diff; the
+---   current window's working directory when omitted
+function M.open(revset, opts)
+    opts = opts or {}
+    -- Absolute, so it does not depend on the directory current later.
+    local cwd = vim.fn.fnamemodify(opts.cwd or vim.fn.getcwd(), ":p"):gsub("(.)/$", "%1")
+    if vim.fn.isdirectory(cwd) == 0 then
+        error("difftastic-nvim: not a directory: " .. cwd, 0)
+    end
+    local missing = binary.missing_difft()
+    if missing and not binary.waiting_for() then
+        error("difftastic-nvim: " .. missing, 0)
+    end
     if M.config.multiple_diffs then
-        -- A diff of the same revset already open (or loading): go to its tab.
+        -- A diff of the same revset in the same directory already open (or
+        -- loading): go to its tab.
         for tab, state in pairs(diffs) do
-            if state.revset == revset and vim.api.nvim_tabpage_is_valid(tab) then
+            if state.revset == revset and state.cwd == cwd and vim.api.nvim_tabpage_is_valid(tab) then
                 vim.api.nvim_set_current_tabpage(tab)
                 return
             end
@@ -866,14 +1057,31 @@ function M.open(revset)
     -- Show the new tab with a loading message while the diff is computed.
     local state = new_state()
     state.revset = revset
+    state.cwd = cwd
     state.original_tabpage = vim.api.nvim_get_current_tabpage()
     vim.cmd("tabnew")
+    -- The diff tab works in the diffed directory, whatever the tab it came from.
+    vim.cmd.tcd(vim.fn.fnameescape(cwd))
     state.diff_tabpage = vim.api.nvim_get_current_tabpage()
     diffs[state.diff_tabpage] = state
     -- Let Neovim handle input still queued, such as a terminal resize reported while
     -- it started up, so the message is centred on the current screen size.
     vim.wait(0)
 
+    if binary.waiting_for() then
+        return wait_for_downloads(state, revset, function()
+            open_now(revset, state, cwd)
+        end)
+    end
+    return open_now(revset, state, cwd)
+end
+
+--- Compute the diff for a state whose tab is set up and current: in the
+--- background when the library can, else blocking with a loading window.
+--- @param revset string|nil
+--- @param state table Diff state
+--- @param cwd string Directory of the repository to diff
+function open_now(revset, state, cwd)
     local ok_lib, lib = pcall(binary.get)
     if ok_lib and type(lib) == "table" and lib.run_diff_async and lib.poll then
         return open_async(lib, revset, state)
@@ -888,11 +1096,11 @@ function M.open(revset)
             error(lib, 0)
         end
         if revset == nil then
-            return lib.run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls)
+            return lib.run_diff_unstaged(M.config.vcs, M.config.max_parallel_difft_calls, cwd)
         elseif revset == "--staged" then
-            return lib.run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls)
+            return lib.run_diff_staged(M.config.vcs, M.config.max_parallel_difft_calls, cwd)
         end
-        return lib.run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls)
+        return lib.run_diff(revset, M.config.vcs, M.config.max_parallel_difft_calls, cwd)
     end)
     if vim.api.nvim_win_is_valid(loading_win) then
         vim.api.nvim_win_close(loading_win, true)
@@ -907,7 +1115,7 @@ function M.open(revset)
         return
     end
 
-    present(state, result.files, revset)
+    present(state, result, revset)
 end
 
 --- Close a diff view: the current tab's, else (without `multiple_diffs`) the
@@ -963,6 +1171,11 @@ end
 --- @param state table Diff state
 --- @param pos table `{ line, col, side }`
 local function restore_position(state, pos)
+    -- A file with one side only shows that side's pane.
+    local shown = pos.side == "head" and state.right_win or state.left_win
+    if not (shown and vim.api.nvim_win_is_valid(shown)) then
+        pos = vim.tbl_extend("force", pos, { side = pos.side == "head" and "base" or "head" })
+    end
     local head = pos.side == "head"
     local pane = head and state.right_win or state.left_win
     local partner = head and state.left_win or state.right_win
@@ -1061,6 +1274,10 @@ end
 function M.focus_diff()
     local state = M.state
     local win = state.pane_side == "base" and state.left_win or state.right_win
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+        -- A file with one side only: its one pane.
+        win = state.left_win and vim.api.nvim_win_is_valid(state.left_win) and state.left_win or state.right_win
+    end
     if win and vim.api.nvim_win_is_valid(win) then
         vim.api.nvim_set_current_win(win)
     end
@@ -1073,11 +1290,10 @@ function M.equalize_panes()
     if not (left and right and vim.api.nvim_win_is_valid(left) and vim.api.nvim_win_is_valid(right)) then
         return
     end
-    local total = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
-    -- An exact half, kept for later resizes (see setup_pane_sync).
+    -- An exact half, kept for later resizes (see setup_pane_sync), split the way
+    -- those resizes split it, so the split does not move by a column between them.
     state.pane_ratio = 0.5
-    vim.api.nvim_win_set_width(left, math.floor(total / 2))
-    state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
+    M.restore_pane_split(state)
 end
 
 --- Give the side panel its configured width (tree.width); the diff panes keep
@@ -1086,6 +1302,7 @@ function M.reset_tree_width()
     local state = M.state
     local tree_win = state.tree_win
     if tree_win and vim.api.nvim_win_is_valid(tree_win) then
+        state.tree_width_wanted = M.config.tree.width
         vim.api.nvim_win_set_width(tree_win, M.config.tree.width)
     end
 end

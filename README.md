@@ -3,7 +3,10 @@
 > - **Never blocks Neovim.** Diffs are computed in the background, files in parallel, with live progress; `q` cancels.
 > - **Built for review.** Mark files as reviewed (`R`), jump to the next unreviewed one (`]u` / `[u`), see progress in the panel (`3/12 reviewed`). Each file remembers where you left it.
 > - **Less noise.** Unchanged lines are folded around each change, with the fold state kept in step between both panes.
+> - **Knows what it shows.** The panel is titled after the diffed commits (or "Staged changes" with the time), and bars name the file and its change on each side. Added and deleted files take a single pane.
 > - **Real line numbers.** The panes show each file's own line numbers, not buffer rows; `gf` opens the file at the right line.
+> - **Word-level changes everywhere.** With `download = true` the plugin downloads a library matching its version and a `difft` that marks only the changed words in comments, strings and text, as it does in code.
+> - **Robust.** A file `difft` fails on is compared line by line instead of failing the review.
 > - **Several diffs at once.** With `multiple_diffs = true`, each diff gets its own tab.
 > - **A layout that behaves.** Panes keep their split on resize, double-click a split to reset it, and the colours follow your theme, including NvChad's theme switcher.
 >
@@ -33,7 +36,7 @@ view with syntax highlighting.
 
 - Neovim 0.10+
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
-- [difftastic](https://github.com/Wilfred/difftastic) (`difft` command)
+- [difftastic](https://github.com/Wilfred/difftastic) (`difft` command); downloaded with `download = true`
 - [jj](https://github.com/martinvonz/jj) or [git](https://git-scm.com/) version control
 - Rust toolchain (only if building from source)
 - [snacks.nvim](https://github.com/folke/snacks.nvim) (optional, only for `:DifftPick`)
@@ -58,6 +61,10 @@ view with syntax highlighting.
     end,
 }
 ```
+
+The binary comes from the GitHub repository the plugin was cloned from, so a fork downloads its own releases: the newest release at or before the installed plugin version. When the plugin is updated, the binary is downloaded again on the next start.
+
+`download = true` also downloads `difft` from the latest release of [jrosiek/difftastic](https://github.com/jrosiek/difftastic), a difftastic build whose JSON output lists only the words that changed in comments, strings and text, so those changes are highlighted word by word. The downloaded `difft` is used in place of one on `PATH`; until it is there, or when it cannot be downloaded, `difft` from `PATH` is used.
 
 ### Building from source
 
@@ -88,7 +95,8 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftPickRange` | Pick end revision, then pick a parent revision as range start |
 | `:DifftClose` | Close the diff view |
 | `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor); marking moves on to the next unreviewed file |
-| `:DifftUpdate` | Update to latest release (requires `download = true`) |
+| `:DifftUpdate` | Download the binary for the installed plugin version again (requires `download = true`) |
+| `:checkhealth difftastic-nvim` | Show the library and the `difft` in use, where they come from and their versions |
 
 A new diff replaces the open one. With `multiple_diffs = true`, each diff opens in a tab of its own and the others stay open; `:Difft` for a revset already open goes to that diff's tab, and `:DifftClose` (or `q`) closes the diff of the current tab.
 
@@ -224,8 +232,8 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 
 | Group | Default | Description |
 |-------|---------|-------------|
-| `DifftAdded` | Derived from `Added` | Added lines background |
-| `DifftRemoved` | Derived from `Removed` | Removed lines background |
+| `DifftAdded` | Derived from `Added` | Added text within a line (background and underline) |
+| `DifftRemoved` | Derived from `Removed` | Removed text within a line (background and underline) |
 | `DifftAddedLine` | Derived from `Added` | Lighter added line background |
 | `DifftRemovedLine` | Derived from `Removed` | Lighter removed line background |
 
@@ -254,10 +262,15 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftTreeMuted` | Derived from `Comment` | Tree hints and separators |
 | `DifftTreeIndent` | Derived from `Comment` | Tree indent guide |
 | `DifftTreeChevron` | Derived from `Comment` | Directory expand/collapse chevron |
-| `DifftTreeTitle` | Derived from `Normal` | Tree header title |
-| `DifftTreeDivider` | Derived from `Comment` | Tree header divider |
-| `DifftTreeRange` | Links to `BlueItalic` | Tree header revset/base-head value |
+| `DifftDiffTitle` | Links to `Title` | Title of the diffed commits in the tree header |
+| `DifftDiffSubtitle` | Derived from `Normal` | Subtitle below it, e.g. the count of further commits |
+| `DifftTreeRule` | Derived from `Normal` | Rules of the tree header and the loading window |
+| `DifftLoadingDone` | Derived from the fold accent | Percentage done in the loading window |
+| `DifftTreeRange` | Derived from `Changed`/`Identifier` | Tree header revset/base-head value |
 | `DifftTreeNormal` | Derived from `Normal` | Tree panel background |
+| `DifftBar` | Derived from `Normal` | Bar on top of the focused side panel or diff pane |
+| `DifftBarNC` | Derived from `Normal` | Bar on top of the other windows of the view |
+| `DifftBarMuted` | Derived from `Normal` | Directory of the file in a diff pane's bar, and other secondary text in the bars |
 | `DifftTreeCursorLine` | Derived from `Normal` | Tree cursorline background |
 | `DifftTreeCurrent` | Derived from `Normal` | Current file highlight |
 

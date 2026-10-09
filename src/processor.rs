@@ -259,6 +259,9 @@ pub struct DisplayFile {
     /// The new version.
     pub head: SideLines,
 
+    /// Compared as plain text, line by line, because difft failed on it.
+    pub text_fallback: bool,
+
     /// The hunks, in order.
     pub hunks: Vec<Hunk>,
 }
@@ -340,6 +343,7 @@ impl From<AlignedFile> for DisplayFile {
             base,
             head,
             hunks,
+            text_fallback: false,
         }
     }
 }
@@ -634,6 +638,9 @@ impl IntoLua for DisplayFile {
                 Status::Changed => "changed",
             },
         )?;
+        if self.text_fallback {
+            table.set("text_fallback", true)?;
+        }
         table.set("additions", self.additions)?;
         table.set("deletions", self.deletions)?;
         table.set("base", self.base.into_lua(lua)?)?;

@@ -8,7 +8,7 @@ M.neutral_opacity = 0.38
 M.filler_opacity = 0.3
 --- Opacity of the added/removed backgrounds of changed text (0-1); soft enough
 --- for dim text such as comments to stay readable on them
-M.bg_opacity = 0.114
+M.bg_opacity = 0.137
 --- Opacity of the lighter backgrounds of whole changed lines (0-1)
 M.line_bg_opacity = 0.0475
 
@@ -94,6 +94,7 @@ M.linked = {
     DifftTreeReviewed = { link = "Added" },
     DifftTreeUnvisited = { link = "Directory" },
     DifftTreeRange = { link = "BlueItalic" },
+    DifftDiffTitle = { link = "Title" },
 
     -- Picker text highlights
     DifftPickerJjIconCurrent = { link = "Added" },
@@ -133,6 +134,9 @@ local function apply_highlights(overrides)
     local normal_bg = get_normal_bg()
     local normal_fg = get_fg("Normal") or "#c0caf5"
     local comment_fg = get_fg("Comment") or "#565f89"
+    -- Secondary text (a subtitle, a directory): text blended into the background,
+    -- readable with any theme (some give NonText the background colour itself).
+    local muted_fg = blend(normal_fg, normal_bg, 0.45)
     local added_fg = get_fg("Added") or "#9ece6a"
     local removed_fg = get_fg("Removed") or "#f7768e"
     local changed_fg = get_fg("Changed") or get_fg("Identifier") or "#7aa2f7"
@@ -151,16 +155,30 @@ local function apply_highlights(overrides)
 
     local derived = {
         -- Background highlights (blended from fg colors)
-        DifftAdded = { bg = added_bg },
-        DifftRemoved = { bg = removed_bg },
+        -- Changed text: a background and an underline in the added/removed colour
+        -- half blended into the background (in the text's own colour where
+        -- terminals draw no underline colours).
+        DifftAdded = { bg = added_bg, underline = true, sp = blend(added_fg, normal_bg, 0.5) },
+        DifftRemoved = { bg = removed_bg, underline = true, sp = blend(removed_fg, normal_bg, 0.5) },
         DifftAddedLine = { bg = added_line_bg },
         DifftRemovedLine = { bg = removed_line_bg },
         DifftTreeCurrent = { bg = normal_blend, bold = true },
         DifftTreeNormal = { bg = tree_panel_bg },
+        DifftDiffSubtitle = { fg = muted_fg },
+        DifftBarMuted = { fg = muted_fg },
+        -- The bars on top of the side panel and the diff panes share the panel's
+        -- background and are underlined in its frame colour; the text of an
+        -- unfocused window's bar is dimmed.
+        DifftBar = { fg = normal_fg, bg = tree_panel_bg, underline = true, sp = comment_fg },
+        DifftBarNC = { fg = blend(normal_fg, normal_bg, 0.6), bg = tree_panel_bg, underline = true, sp = comment_fg },
+        -- The rules of the side panel's header, drawn like the bars' underlines:
+        -- in the frame colour where terminals support underline colours, else in
+        -- the unfocused bars' text colour.
+        DifftTreeRule = { fg = blend(normal_fg, normal_bg, 0.6), underline = true, sp = comment_fg },
+        -- The percentage done in the loading window's bar.
+        DifftLoadingDone = { fg = accent_fg, underline = true, sp = accent_fg },
         DifftTreeCursorLine = { bg = tree_cursor_bg },
         DifftTreeEndOfBuffer = { fg = tree_panel_bg, bg = tree_panel_bg },
-        DifftTreeTitle = { fg = normal_fg, bold = true },
-        DifftTreeDivider = { fg = comment_fg },
         DifftTreeMuted = { fg = comment_fg },
         DifftTreeIndent = { fg = comment_fg },
         DifftTreeChevron = { fg = comment_fg },

@@ -8,8 +8,7 @@
 //! the job posts.
 
 use crate::job::{self, DiffError, Run, Update};
-use crate::processor::DisplayFile;
-use crate::{DiffMode, compute_diff, files_to_lua};
+use crate::{Diff, DiffMode, compute_diff, diff_to_lua};
 use mlua::prelude::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -139,17 +138,13 @@ fn deliver_progress(lua: &Lua, job: &Job) -> LuaResult<()> {
 
 /// Calls the job's completion function with `(files, nil)` or `(nil, error)`,
 /// unless the job is cancelled.
-fn deliver_result(
-    lua: &Lua,
-    job: &Job,
-    result: Result<Vec<DisplayFile>, DiffError>,
-) -> LuaResult<()> {
+fn deliver_result(lua: &Lua, job: &Job, result: Result<Diff, DiffError>) -> LuaResult<()> {
     if job.run.is_cancelled() {
         return Ok(());
     }
     let callback: LuaFunction = lua.registry_value(&job.complete_fn)?;
     match result {
-        Ok(files) => callback.call::<()>((files_to_lua(lua, files)?, LuaValue::Nil)),
+        Ok(diff) => callback.call::<()>((diff_to_lua(lua, diff)?, LuaValue::Nil)),
         Err(DiffError::Failed(message)) => callback.call::<()>((LuaValue::Nil, message)),
         Err(DiffError::Cancelled) => Ok(()),
     }
@@ -159,7 +154,8 @@ fn deliver_result(
 /// the thread pool and returns a job handle with `cancel()`.
 ///
 /// `spec` is `{ mode = "range"|"unstaged"|"staged", revset = ..., vcs = ...,
-/// max_parallel = ... }` (`revset` only for "range"). Both callbacks run on the
+/// max_parallel = ..., cwd = ... }` (`revset` only for "range"; `cwd`, a
+/// directory inside the repository, defaults to the current one). Both callbacks run on the
 /// main thread, from `poll()`: `on_progress(count, total, message)`, with
 /// `total` -1 while unknown, cancels the job by returning `false`;
 /// `on_complete(result, err)` gets the table the blocking functions return, or
@@ -180,6 +176,7 @@ pub fn run_diff_async(
     };
     let vcs: String = spec.get("vcs")?;
     let max_parallel = spec.get::<Option<usize>>("max_parallel")?.unwrap_or(0);
+    let dir = crate::diff_dir(spec.get::<Option<String>>("cwd")?)?;
 
     let (post, guard) = {
         let dispatcher = dispatcher(lua)?;
@@ -220,7 +217,7 @@ pub fn run_diff_async(
     let worker_job = Arc::clone(&job);
     job::pool().spawn(move || {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            compute_diff(&mode, &vcs, max_parallel, &worker_job.run)
+            compute_diff(&dir, &mode, &vcs, max_parallel, &worker_job.run)
         }))
         .unwrap_or_else(|panic| {
             let message = panic

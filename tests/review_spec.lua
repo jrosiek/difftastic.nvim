@@ -248,7 +248,7 @@ describe("review markers", function()
     --- before it.
     local function assert_marker_column()
         local width = tree.text_width(difft.state.tree_win)
-        local rows = vim.api.nvim_buf_get_lines(difft.state.tree_buf, tree.header_lines, -1, false)
+        local rows = vim.api.nvim_buf_get_lines(difft.state.tree_buf, difft.state.header_lines, -1, false)
         for _, text in ipairs(rows) do
             local count = vim.fn.strchars(text)
             assert.are.equal(width, vim.fn.strdisplaywidth(text), text)
@@ -468,7 +468,7 @@ describe("review markers", function()
 
     describe("progress in the header", function()
         local function file_line()
-            return vim.api.nvim_buf_get_lines(difft.state.tree_buf, 1, 2, false)[1]
+            return vim.api.nvim_buf_get_lines(difft.state.tree_buf, 0, 1, false)[1]
         end
 
         it("shows the file count while nothing is reviewed", function()

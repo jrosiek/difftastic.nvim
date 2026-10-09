@@ -53,7 +53,9 @@ local FILETYPES = {
 --- @param buf number Buffer handle
 local function setup_diff_buffer(buf)
     vim.bo[buf].buftype = "nofile"
-    vim.bo[buf].bufhidden = "wipe"
+    -- Kept while its pane is closed for a file that exists on one side only;
+    -- deleted with the view.
+    vim.bo[buf].bufhidden = "hide"
     vim.bo[buf].swapfile = false
     vim.bo[buf].modifiable = false
     vim.b[buf].difftastic_pane = true
@@ -70,6 +72,7 @@ local function setup_diff_window(win)
     vim.wo[win].number = true
     vim.wo[win].statuscolumn = M.STATUSCOLUMN
     vim.wo[win].signcolumn = "no"
+    vim.wo[win].winhighlight = "WinBar:DifftBar,WinBarNC:DifftBarNC"
 end
 
 local function is_full_line_highlight(hl)
@@ -169,8 +172,277 @@ function M.open(state)
 
     -- :vsplit gives the new (current) pane at least 'winwidth' columns, so in a
     -- narrow terminal the base pane would get what is left; split evenly.
+    -- Rounded like every later split (restore_pane_split): the extra column of an
+    -- odd width goes to the base pane.
     local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
-    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
+    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2 + 0.5))
+end
+
+--- How a file changed: its glyph, highlight group and name, as the tree and the
+--- pane bars show it.
+--- @param file table A file or its tree node (`status`, `moved_from`, `additions`, `deletions`)
+--- @return string glyph
+--- @return string hl_group
+--- @return string name "renamed", "added", "deleted", "modified" or "unchanged"
+function M.file_status(file)
+    if file.moved_from then
+        return "➜", "DifftTreeRenamed", "renamed"
+    end
+    if file.status == "created" then
+        return "+", "DifftTreeAdded", "added"
+    end
+    if file.status == "deleted" then
+        return "-", "DifftTreeDeleted", "deleted"
+    end
+    if (file.additions or 0) > 0 or (file.deletions or 0) > 0 then
+        return "●", "DifftTreeModified", "modified"
+    end
+    return " ", "DifftTreeMuted", "unchanged"
+end
+
+--- Escape text for a statusline-like option ('winbar').
+local function escape_bar(text)
+    return (text:gsub("%%", "%%%%"))
+end
+
+--- The file-type icon of a file name and its highlight group, when icons are
+--- enabled and nvim-web-devicons is installed.
+--- @param name string
+--- @return string|nil icon
+--- @return string|nil hl_group
+local function file_icon(name)
+    local ok, devicons = pcall(require, "nvim-web-devicons")
+    if not (ok and require("difftastic-nvim").config.tree.icons.enable) then
+        return nil
+    end
+    return devicons.get_icon(name, nil, { default = true })
+end
+
+--- Cut text to at most `width` display cells, keeping its start (`keep_end`
+--- false) or its end, with "…" where it was cut.
+local function cut(text, width, keep_end)
+    if vim.fn.strdisplaywidth(text) <= width then
+        return text
+    end
+    if width <= 0 then
+        return ""
+    end
+    local chars = vim.fn.strchars(text)
+    local take = chars
+    local function part(n)
+        return keep_end and vim.fn.strcharpart(text, chars - n, n) or vim.fn.strcharpart(text, 0, n)
+    end
+    while take > 0 and vim.fn.strdisplaywidth(part(take)) > width - 1 do
+        take = take - 1
+    end
+    return keep_end and ("…" .. part(take)) or (part(take) .. "…")
+end
+
+--- The bar of a diff pane, laid out for the window being drawn (the 'winbar'
+--- expression set by `set_bars`): the icon, the file name, the directory dimmed,
+--- and the side's count on the right, with a one-cell margin on both sides. When
+--- the pane is too narrow, the directory is cut from its left, then left out,
+--- then the count, and only then is the file name cut.
+--- @return string
+function M.pane_bar()
+    -- The window being drawn; nvim_eval_statusline() makes it current instead.
+    local win = vim.g.statusline_winid or vim.api.nvim_get_current_win()
+    local bar = vim.w[win].difft_bar
+    if not bar then
+        return ""
+    end
+    local width = vim.api.nvim_win_get_width(win) - 2
+    if width < 1 then
+        -- No room for a character between the margins: blank, never wider than
+        -- the pane (Neovim would cut it with "<").
+        return "%*" .. string.rep(" ", width + 2)
+    end
+    local function w(text)
+        return vim.fn.strdisplaywidth(text)
+    end
+    local icon = bar.icon and (bar.icon .. " ") or ""
+    if w(icon) >= width then
+        -- Not even one character of the name next to the icon: the name alone.
+        icon = ""
+    end
+    local count = bar.count and (" " .. bar.count) or ""
+    local dir = bar.dir
+    local fixed = w(icon) + w(bar.name)
+    -- The directory, set off by two spaces, gets what is left after the rest; a
+    -- cut one shows at least one character after the "…".
+    local room = width - fixed - w(count) - 2
+    if dir and room < math.min(w(dir), 2) then
+        dir = nil
+    elseif dir then
+        dir = cut(dir, room, true)
+    end
+    if not dir and fixed + w(count) > width then
+        count = ""
+    end
+    local name = cut(bar.name, width - w(icon), false)
+
+    -- Neovim drops leading spaces of an expression's plain result; an item in
+    -- front keeps the margin.
+    local text = "%* "
+    if icon ~= "" then
+        text = text .. ("%%#%s#%s%%* "):format(bar.icon_hl or "DifftBarMuted", escape_bar(bar.icon))
+    end
+    text = text .. escape_bar(name)
+    if dir then
+        text = text .. "  %#DifftBarMuted#" .. escape_bar(dir) .. "%*"
+    end
+    if count ~= "" then
+        text = text .. ("%%= %%#%s#%s%%*"):format(bar.count_hl, bar.count)
+    end
+    return text .. " "
+end
+
+--- The bar of the side panel (the 'winbar' expression set by `set_bars`): how the
+--- shown file changed, right-aligned with a one-cell margin, its name cut with
+--- "…" when the panel is too narrow. A file difft could only compare as plain
+--- text gets "≡ line by line" on the left, dimmed, while there is room for it.
+--- @return string
+function M.panel_bar()
+    -- The window being drawn; nvim_eval_statusline() makes it current instead.
+    local win = vim.g.statusline_winid or vim.api.nvim_get_current_win()
+    local status = vim.w[win].difft_status
+    if not status then
+        return ""
+    end
+    local width = vim.api.nvim_win_get_width(win) - 1
+    local text = cut(status.glyph .. " " .. status.name, width, false)
+    -- Neovim drops leading spaces of an expression's plain result; an item in
+    -- front keeps the margin.
+    local note = "%*"
+    if status.text_fallback then
+        local label = " ≡ line by line  "
+        if vim.fn.strdisplaywidth(label) + vim.fn.strdisplaywidth(text) <= width then
+            note = "%* %#DifftBarMuted#≡ line by line%*"
+        end
+    end
+    return ("%s%%=%%#%s#%s%%* "):format(note, status.hl_group, escape_bar(text))
+end
+
+--- Name one of the view's buffers `difftastic://<tab>/<part>[/<path>]`, so
+--- status lines show what it holds instead of "[Scratch]". The tab's handle keeps
+--- the names of two diff tabs showing the same file apart.
+--- @param state table Plugin state
+--- @param buf number
+--- @param part string "panel", "base" or "head"
+--- @param path string|nil The file shown, for a pane
+function M.name_buffer(state, buf, part, path)
+    if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+        return
+    end
+    local name = ("difftastic://%d/%s"):format(state.diff_tabpage or 0, part)
+    if path then
+        name = name .. "/" .. path
+    end
+    local old = vim.api.nvim_buf_get_name(buf)
+    if old == name or not pcall(vim.api.nvim_buf_set_name, buf, name) then
+        return
+    end
+    -- Like :file, renaming leaves an empty unlisted buffer under the old name.
+    if old ~= "" then
+        for _, other in ipairs(vim.api.nvim_list_bufs()) do
+            if other ~= buf and vim.api.nvim_buf_get_name(other) == old and not vim.bo[other].buflisted then
+                pcall(vim.api.nvim_buf_delete, other, { force = true })
+            end
+        end
+    end
+end
+
+--- Show the shown file in bars at the top of the side panel and the panes. The
+--- panel's bar has how the file changed, right-aligned next to the panes. Each
+--- pane's bar has the file on that side (the base pane names the file as it was,
+--- its old path for a rename) and that side's line count: removed lines in the
+--- base pane, added lines in the head pane (see `pane_bar`).
+--- @param state table Plugin state
+--- @param file table File from the library
+function M.set_bars(state, file)
+    local glyph, hl_group, name = M.file_status(file)
+    if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
+        vim.w[state.tree_win].difft_status = {
+            glyph = glyph,
+            hl_group = hl_group,
+            name = name,
+            text_fallback = file.text_fallback,
+        }
+        vim.wo[state.tree_win].winbar = "%{%v:lua.require'difftastic-nvim.diff'.panel_bar()%}"
+    end
+
+    -- A renamed file has the status "created", at its new path.
+    local base = file.moved_from or (file.status ~= "created" and file.path or nil)
+    local head = file.status ~= "deleted" and file.path or nil
+    M.name_buffer(state, state.left_buf, "base", base)
+    M.name_buffer(state, state.right_buf, "head", head)
+    local panes = {
+        { state.left_win, base, (file.deletions or 0) > 0 and ("-" .. file.deletions) or nil, "DifftFileDeleted" },
+        { state.right_win, head, (file.additions or 0) > 0 and ("+" .. file.additions) or nil, "DifftFileAdded" },
+    }
+    for _, pane in ipairs(panes) do
+        local win, path = pane[1], pane[2]
+        if win and path and vim.api.nvim_win_is_valid(win) then
+            local file_name, dir = vim.fn.fnamemodify(path, ":t"), vim.fn.fnamemodify(path, ":h")
+            local icon, icon_hl = file_icon(file_name)
+            vim.w[win].difft_bar = {
+                name = file_name,
+                dir = dir ~= "." and dir or nil,
+                icon = icon,
+                icon_hl = icon_hl,
+                count = pane[3],
+                count_hl = pane[4],
+            }
+            vim.wo[win].winbar = "%{%v:lua.require'difftastic-nvim.diff'.pane_bar()%}"
+        end
+    end
+end
+
+--- Show only the pane of the side a file exists on: an added file has no base
+--- side, a deleted one no head side. The other pane's window is closed, so the
+--- remaining pane takes the width of both, and opened again, on its side and in
+--- the panes' last ratio, for a file with both sides.
+--- @param state table Plugin state
+--- @param file table File from the library
+function M.set_panes(state, file)
+    local function valid(win)
+        return win and vim.api.nvim_win_is_valid(win)
+    end
+    -- A renamed file has the status "created", at its new path.
+    local wanted = {
+        base = file.moved_from ~= nil or file.status ~= "created",
+        head = file.status ~= "deleted",
+    }
+    local panes = {
+        base = { win = "left_win", buf = "left_buf", split = "left", other = "head" },
+        head = { win = "right_win", buf = "right_buf", split = "right", other = "base" },
+    }
+    -- Open first, then close: from an added file straight to a deleted one, the
+    -- base pane must be back before the head pane can go.
+    local reopened = false
+    for side, pane in pairs(panes) do
+        local other = state[panes[pane.other].win]
+        if wanted[side] and not valid(state[pane.win]) and valid(other) then
+            local win = vim.api.nvim_open_win(state[pane.buf], false, { split = pane.split, win = other })
+            setup_diff_window(win)
+            state[pane.win] = win
+            reopened = true
+        end
+    end
+    for side, pane in pairs(panes) do
+        local win, other = state[pane.win], state[panes[pane.other].win]
+        if not wanted[side] and valid(win) and valid(other) then
+            if vim.api.nvim_get_current_win() == win then
+                vim.api.nvim_set_current_win(other)
+                state.pane_side = pane.other
+            end
+            vim.api.nvim_win_close(win, true)
+            state[pane.win] = nil
+        end
+    end
+    if reopened then
+        require("difftastic-nvim").restore_pane_split(state)
+    end
 end
 
 --- Render a file's diff content into the left/right panes.
@@ -180,6 +452,8 @@ function M.render(state, file)
     local config = require("difftastic-nvim").config
     require("difftastic-nvim.layout").ensure_rows(file)
     local rows = file.rows or {}
+    M.set_panes(state, file)
+    M.set_bars(state, file)
 
     -- Rows where hunks start (1-based).
     state.hunk_positions = {}
@@ -267,8 +541,11 @@ function M.render(state, file)
         end
     end
 
-    vim.api.nvim_win_set_cursor(state.left_win, { 1, 0 })
-    vim.api.nvim_win_set_cursor(state.right_win, { 1, 0 })
+    for _, win in ipairs({ state.left_win, state.right_win }) do
+        if win and vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        end
+    end
 end
 
 --- The file line shown on a pane's buffer row.
