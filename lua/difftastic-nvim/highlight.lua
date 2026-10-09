@@ -8,7 +8,7 @@ M.neutral_opacity = 0.38
 M.filler_opacity = 0.3
 --- Opacity of the added/removed backgrounds of changed text (0-1); soft enough
 --- for dim text such as comments to stay readable on them
-M.bg_opacity = 0.114
+M.bg_opacity = 0.137
 --- Opacity of the lighter backgrounds of whole changed lines (0-1)
 M.line_bg_opacity = 0.0475
 
@@ -155,8 +155,11 @@ local function apply_highlights(overrides)
 
     local derived = {
         -- Background highlights (blended from fg colors)
-        DifftAdded = { bg = added_bg },
-        DifftRemoved = { bg = removed_bg },
+        -- Changed text: a background and an underline in the added/removed colour
+        -- half blended into the background (in the text's own colour where
+        -- terminals draw no underline colours).
+        DifftAdded = { bg = added_bg, underline = true, sp = blend(added_fg, normal_bg, 0.5) },
+        DifftRemoved = { bg = removed_bg, underline = true, sp = blend(removed_fg, normal_bg, 0.5) },
         DifftAddedLine = { bg = added_line_bg },
         DifftRemovedLine = { bg = removed_line_bg },
         DifftTreeCurrent = { bg = normal_blend, bold = true },
