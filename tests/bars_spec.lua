@@ -166,3 +166,69 @@ describe("view bars", function()
         end
     end)
 end)
+
+describe("view buffer names", function()
+    local original_get
+
+    before_each(function()
+        vim.o.columns = 200
+        difft.config.vcs = "git"
+        original_get = binary.get
+        binary.get = function()
+            return {
+                run_diff = function()
+                    return {
+                        files = {
+                            file_record("lua/a.txt", "changed"),
+                            file_record("lua/renamed.txt", "created", { moved_from = "lua/old.txt" }),
+                            file_record("new.txt", "created", { deletions = 0 }),
+                        },
+                    }
+                end,
+            }
+        end
+        difft.open("HEAD")
+    end)
+
+    after_each(function()
+        difft.close()
+        binary.get = original_get
+    end)
+
+    local function names()
+        local s = difft.state
+        return {
+            vim.api.nvim_buf_get_name(s.tree_buf),
+            vim.api.nvim_buf_get_name(s.left_buf),
+            vim.api.nvim_buf_get_name(s.right_buf),
+        }
+    end
+
+    it("names the panel and the panes after the tab and the file on each side", function()
+        local s = difft.state
+        local prefix = "difftastic://" .. s.diff_tabpage .. "/"
+        local buffers = #vim.api.nvim_list_bufs()
+
+        difft.show_file(1)
+        assert.are.same({ prefix .. "panel", prefix .. "base/lua/a.txt", prefix .. "head/lua/a.txt" }, names())
+        difft.show_file(2)
+        assert.are.same({ prefix .. "panel", prefix .. "base/lua/old.txt", prefix .. "head/lua/renamed.txt" }, names())
+        -- An added file has no base side; its pane is closed meanwhile.
+        difft.show_file(3)
+        assert.are.same({ prefix .. "panel", prefix .. "base", prefix .. "head/new.txt" }, names())
+        -- Renaming leaves no buffers behind, and the buffers stay unsaved scratch.
+        assert.are.equal(buffers, #vim.api.nvim_list_bufs())
+        assert.are.equal("nofile", vim.bo[s.right_buf].buftype)
+    end)
+
+    it("keeps two tabs showing the same file apart", function()
+        difft.config.multiple_diffs = true
+        local first = names()
+        difft.open("HEAD~1")
+        local second = names()
+        difft.config.multiple_diffs = false
+        assert.are_not.equal(first[3], second[3])
+        assert.are.equal(first[3]:gsub("^difftastic://%d+/", ""), second[3]:gsub("^difftastic://%d+/", ""))
+        difft.close()
+    end)
+end)

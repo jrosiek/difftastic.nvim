@@ -547,6 +547,7 @@ end
 function M.open(state)
     state.tree_win = vim.api.nvim_get_current_win()
     state.tree_buf = vim.api.nvim_create_buf(false, true)
+    require("difftastic-nvim.diff").name_buffer(state, state.tree_buf, "panel")
     vim.api.nvim_win_set_buf(state.tree_win, state.tree_buf)
     vim.api.nvim_win_set_width(state.tree_win, get_config().width)
 

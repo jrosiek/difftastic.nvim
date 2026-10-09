@@ -310,6 +310,35 @@ function M.panel_bar()
     return ("%%=%%#%s#%s%%* "):format(status.hl_group, escape_bar(text))
 end
 
+--- Name one of the view's buffers `difftastic://<tab>/<part>[/<path>]`, so
+--- status lines show what it holds instead of "[Scratch]". The tab's handle keeps
+--- the names of two diff tabs showing the same file apart.
+--- @param state table Plugin state
+--- @param buf number
+--- @param part string "panel", "base" or "head"
+--- @param path string|nil The file shown, for a pane
+function M.name_buffer(state, buf, part, path)
+    if not (buf and vim.api.nvim_buf_is_valid(buf)) then
+        return
+    end
+    local name = ("difftastic://%d/%s"):format(state.diff_tabpage or 0, part)
+    if path then
+        name = name .. "/" .. path
+    end
+    local old = vim.api.nvim_buf_get_name(buf)
+    if old == name or not pcall(vim.api.nvim_buf_set_name, buf, name) then
+        return
+    end
+    -- Like :file, renaming leaves an empty unlisted buffer under the old name.
+    if old ~= "" then
+        for _, other in ipairs(vim.api.nvim_list_bufs()) do
+            if other ~= buf and vim.api.nvim_buf_get_name(other) == old and not vim.bo[other].buflisted then
+                pcall(vim.api.nvim_buf_delete, other, { force = true })
+            end
+        end
+    end
+end
+
 --- Show the shown file in bars at the top of the side panel and the panes. The
 --- panel's bar has how the file changed, right-aligned next to the panes. Each
 --- pane's bar has the file on that side (the base pane names the file as it was,
@@ -327,6 +356,8 @@ function M.set_bars(state, file)
     -- A renamed file has the status "created", at its new path.
     local base = file.moved_from or (file.status ~= "created" and file.path or nil)
     local head = file.status ~= "deleted" and file.path or nil
+    M.name_buffer(state, state.left_buf, "base", base)
+    M.name_buffer(state, state.right_buf, "head", head)
     local panes = {
         { state.left_win, base, (file.deletions or 0) > 0 and ("-" .. file.deletions) or nil, "DifftFileDeleted" },
         { state.right_win, head, (file.additions or 0) > 0 and ("+" .. file.additions) or nil, "DifftFileAdded" },
