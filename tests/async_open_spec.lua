@@ -153,6 +153,50 @@ describe("opening a diff asynchronously", function()
         )
     end)
 
+    describe("while a download it needs runs", function()
+        local original_waiting
+        local waiting
+
+        before_each(function()
+            original_waiting = binary.waiting_for
+            waiting = "Downloading difft…"
+            binary.waiting_for = function()
+                return waiting
+            end
+        end)
+
+        after_each(function()
+            binary.waiting_for = original_waiting
+        end)
+
+        it("shows what it waits for, then starts the diff in its tab", function()
+            difft.open("HEAD")
+            local tab = vim.api.nvim_get_current_tabpage()
+
+            assert.truthy(loading_lines(tab)[3]:find("Downloading difft…", 1, true), loading_lines(tab)[3])
+            vim.wait(300)
+            assert.are.equal(0, #lib.jobs)
+
+            waiting = nil
+            assert.is_true(vim.wait(2000, function()
+                return #lib.jobs == 1
+            end, 10))
+            assert.are.equal("range", lib.jobs[1].spec.mode)
+            assert.are.equal(tab, vim.api.nvim_get_current_tabpage())
+            assert.truthy(loading_lines(tab)[3]:find("Starting…", 1, true))
+        end)
+
+        it("is cancelled by closing", function()
+            difft.open("HEAD")
+            difft.close()
+            waiting = nil
+            vim.wait(400)
+
+            assert.are.equal(0, #lib.jobs)
+            assert.are.equal(start_tab, vim.api.nvim_get_current_tabpage())
+        end)
+    end)
+
     it("asks for staged and unstaged changes by mode", function()
         difft.open("--staged")
         assert.are.equal("staged", lib.jobs[1].spec.mode)

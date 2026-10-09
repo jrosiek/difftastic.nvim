@@ -9,6 +9,7 @@ local keymaps = require("difftastic-nvim.keymaps")
 local fold = require("difftastic-nvim.fold")
 
 local record_position -- defined with the per-file positions below
+local open_now, wait_for_downloads -- defined with open() below
 
 --- Default configuration
 M.config = {
@@ -855,6 +856,73 @@ local function present(state, result, revset)
     setup_pane_sync(state)
 end
 
+--- Wait in the diff tab, with the loading window saying for what, until the
+--- downloads the diff needs (see binary.waiting_for) are done, then call
+--- `start` in that tab. The close key cancels it, as it cancels a diff loading.
+--- @param state table Diff state, its tab current
+--- @param revset string|nil
+--- @param start fun()
+function wait_for_downloads(state, revset, start)
+    local record = { tab = state.diff_tabpage, original_tab = state.original_tabpage, closed = false }
+    record.box = show_progress_box(range_context(revset, M.config.vcs))
+    record.win = record.box.win
+    show_progress(record.box, 0, -1, binary.waiting_for() or "")
+    if M.config.keymaps.close then
+        vim.keymap.set("n", M.config.keymaps.close, function()
+            M.close()
+        end, { buffer = vim.api.nvim_get_current_buf(), nowait = true, desc = "Cancel loading the diff" })
+    end
+    state.loading = record
+
+    local timer = vim.uv.new_timer()
+    local function stop()
+        if not timer:is_closing() then
+            timer:stop()
+            timer:close()
+        end
+    end
+    local function proceed()
+        state.loading = nil
+        delete_autocmds(record)
+        if vim.api.nvim_win_is_valid(record.win) then
+            vim.api.nvim_win_close(record.win, true)
+        end
+        -- The download may have failed, leaving nothing to run.
+        local missing = binary.state == "failed" and "Library not available. Check :messages for details."
+            or binary.missing_difft()
+        if missing then
+            leave_diff_tab(state)
+            vim.notify("difftastic-nvim: " .. missing, vim.log.levels.ERROR)
+            return
+        end
+        start()
+    end
+    timer:start(100, 100, vim.schedule_wrap(function()
+        if state.loading ~= record or record.closed then
+            return stop() -- cancelled
+        end
+        local waiting = binary.waiting_for()
+        if waiting then
+            show_progress(record.box, 0, -1, waiting)
+            return
+        end
+        stop()
+        if vim.api.nvim_get_current_tabpage() == record.tab then
+            proceed()
+        else
+            -- Windows are laid out in the current tab: wait until the diff tab is.
+            M.diff_autocmd(record, "DifftLoading", "TabEnter", {
+                callback = function()
+                    if vim.api.nvim_get_current_tabpage() == record.tab then
+                        proceed()
+                        return true
+                    end
+                end,
+            })
+        end
+    end))
+end
+
 --- Compute the diff while Neovim stays responsive: the loading window shows the
 --- progress, and the view is built in the diff tab once the result arrives (on
 --- entering that tab, if another tab is current then). Closing the tab, closing
@@ -963,6 +1031,10 @@ function M.open(revset, opts)
     if vim.fn.isdirectory(cwd) == 0 then
         error("difftastic-nvim: not a directory: " .. cwd, 0)
     end
+    local missing = binary.missing_difft()
+    if missing and not binary.waiting_for() then
+        error("difftastic-nvim: " .. missing, 0)
+    end
     if M.config.multiple_diffs then
         -- A diff of the same revset in the same directory already open (or
         -- loading): go to its tab.
@@ -995,6 +1067,20 @@ function M.open(revset, opts)
     -- it started up, so the message is centred on the current screen size.
     vim.wait(0)
 
+    if binary.waiting_for() then
+        return wait_for_downloads(state, revset, function()
+            open_now(revset, state, cwd)
+        end)
+    end
+    return open_now(revset, state, cwd)
+end
+
+--- Compute the diff for a state whose tab is set up and current: in the
+--- background when the library can, else blocking with a loading window.
+--- @param revset string|nil
+--- @param state table Diff state
+--- @param cwd string Directory of the repository to diff
+function open_now(revset, state, cwd)
     local ok_lib, lib = pcall(binary.get)
     if ok_lib and type(lib) == "table" and lib.run_diff_async and lib.poll then
         return open_async(lib, revset, state)

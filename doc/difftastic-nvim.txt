@@ -115,8 +115,14 @@ Downloaded binaries are stored in: >
 
                                                                    *:DifftUpdate*
 :DifftUpdate
-    Download the binary for the installed plugin version again. Only
-    available when using auto-download (`download = true`).
+    Download the binary for the installed plugin version, and `difft`, again.
+    Only available when using auto-download (`download = true`).
+
+                                                   *difftastic-nvim-health*
+:checkhealth difftastic-nvim
+    Show the library and the `difft` in use, where they come from (a local
+    build, a download or PATH) and their versions, and whether nui.nvim is
+    installed.
 
                                                                       *:DifftPick*
 :DifftPick
@@ -238,6 +244,12 @@ download ~
     On startup the plugin checks that the cached binary is the one for the
     installed plugin version, from the same repository, and downloads it
     again when it is not (e.g. after the plugin was updated).
+
+    It also downloads `difft` from the latest release of jrosiek/difftastic,
+    a difftastic build whose JSON output lists only the words that changed in
+    comments, strings and text, into the same directory, and uses it in place
+    of `difft` on PATH. Until it is there, or when it cannot be downloaded,
+    `difft` from PATH is used. |:DifftUpdate| downloads both again.
 
     Default: false
 

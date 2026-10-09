@@ -50,6 +50,7 @@ use mlua::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod difftastic;
@@ -218,6 +219,25 @@ fn jj_diff_stats(root: &Path, mode: &DiffMode) -> FileStats {
     git_diff_stats(root, &[git_range.as_str()])
 }
 
+/// The difft program the library runs, set from Lua (`set_difft`), e.g. a
+/// downloaded one; `difft` from PATH when unset.
+static DIFFT: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+fn difft_path() -> Option<PathBuf> {
+    DIFFT.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A command running difft.
+fn difft_command() -> Command {
+    Command::new(difft_path().unwrap_or_else(|| PathBuf::from("difft")))
+}
+
+/// `set_difft(path)`: run difft from `path`, or from PATH when `path` is nil.
+fn set_difft(_: &Lua, path: Option<String>) -> LuaResult<()> {
+    *DIFFT.write().unwrap_or_else(|e| e.into_inner()) = path.map(PathBuf::from);
+    Ok(())
+}
+
 /// Runs difftastic via jj for the mode (`jj diff [-r <revset>] --tool difft`) and
 /// parses the JSON output.
 fn run_jj_diff(
@@ -237,11 +257,16 @@ fn run_jj_diff(
             cmd.args(["-r", "@"]);
         }
     }
-    let output = run.output(
-        cmd.args(["--tool", "difft"])
-            .env("DFT_DISPLAY", "json")
-            .env("DFT_UNSTABLE", "yes"),
-    )?;
+    cmd.args(["--tool", "difft"]);
+    if let Some(path) = difft_path() {
+        // jj's own difft tool definition, run from the given program (a TOML
+        // literal string, so backslashes in Windows paths stay as they are).
+        cmd.arg("--config").arg(format!(
+            "merge-tools.difft.program='{}'",
+            path.to_string_lossy()
+        ));
+    }
+    let output = run.output(cmd.env("DFT_DISPLAY", "json").env("DFT_UNSTABLE", "yes"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -269,7 +294,7 @@ fn run_difft_on_contents(path: &Path, old: &str, new: &str) -> Option<difftastic
         std::fs::create_dir_all(new_file.parent()?).ok()?;
         std::fs::write(&old_file, old).ok()?;
         std::fs::write(&new_file, new).ok()?;
-        let output = Command::new("difft")
+        let output = difft_command()
             .arg(&old_file)
             .arg(&new_file)
             .env("DFT_DISPLAY", "json")
@@ -456,7 +481,7 @@ fn run_difft_git_style(
             .or(change.new_path.as_deref())
             .unwrap_or_default();
 
-        let mut cmd = Command::new("difft");
+        let mut cmd = difft_command();
         cmd.arg(path)
             .arg(&old_file)
             .args([".", "."])
@@ -1008,6 +1033,7 @@ fn run_diff_staged(
 #[mlua::lua_module]
 fn difftastic_nvim(lua: &Lua) -> LuaResult<LuaTable> {
     let exports = lua.create_table()?;
+    exports.set("set_difft", lua.create_function(set_difft)?)?;
     exports.set(
         "run_diff",
         lua.create_function(

@@ -33,7 +33,7 @@ view with syntax highlighting.
 
 - Neovim 0.10+
 - [nui.nvim](https://github.com/MunifTanjim/nui.nvim)
-- [difftastic](https://github.com/Wilfred/difftastic) (`difft` command)
+- [difftastic](https://github.com/Wilfred/difftastic) (`difft` command); downloaded with `download = true`
 - [jj](https://github.com/martinvonz/jj) or [git](https://git-scm.com/) version control
 - Rust toolchain (only if building from source)
 - [snacks.nvim](https://github.com/folke/snacks.nvim) (optional, only for `:DifftPick`)
@@ -60,6 +60,8 @@ view with syntax highlighting.
 ```
 
 The binary comes from the GitHub repository the plugin was cloned from, so a fork downloads its own releases: the newest release at or before the installed plugin version. When the plugin is updated, the binary is downloaded again on the next start.
+
+`download = true` also downloads `difft` from the latest release of [jrosiek/difftastic](https://github.com/jrosiek/difftastic), a difftastic build whose JSON output lists only the words that changed in comments, strings and text, so those changes are highlighted word by word. The downloaded `difft` is used in place of one on `PATH`; until it is there, or when it cannot be downloaded, `difft` from `PATH` is used.
 
 ### Building from source
 
@@ -91,6 +93,7 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftClose` | Close the diff view |
 | `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor); marking moves on to the next unreviewed file |
 | `:DifftUpdate` | Download the binary for the installed plugin version again (requires `download = true`) |
+| `:checkhealth difftastic-nvim` | Show the library and the `difft` in use, where they come from and their versions |
 
 A new diff replaces the open one. With `multiple_diffs = true`, each diff opens in a tab of its own and the others stay open; `:Difft` for a revset already open goes to that diff's tab, and `:DifftClose` (or `q`) closes the diff of the current tab.
 
