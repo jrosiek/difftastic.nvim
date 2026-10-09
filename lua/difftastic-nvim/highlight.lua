@@ -1,9 +1,16 @@
 --- Highlight group definitions.
 local M = {}
 
---- Default opacity for background highlights (0-1)
-M.bg_opacity = 0.38
-M.line_bg_opacity = M.bg_opacity * 0.5
+--- Opacity of the neutral blend behind the panel's current row (0-1)
+M.neutral_opacity = 0.38
+--- Opacity of the comment colour that fillers are drawn in, over the
+--- background (0-1)
+M.filler_opacity = 0.3
+--- Opacity of the added/removed backgrounds of changed text (0-1); soft enough
+--- for dim text such as comments to stay readable on them
+M.bg_opacity = 0.114
+--- Opacity of the lighter backgrounds of whole changed lines (0-1)
+M.line_bg_opacity = 0.0475
 
 --- Blend two colors with a given alpha.
 --- @param fg string Foreground hex color (e.g., "#ff0000")
@@ -97,7 +104,7 @@ local function apply_highlights(overrides)
     local removed_bg = blend(removed_fg, normal_bg, M.bg_opacity)
     local added_line_bg = blend(added_fg, normal_bg, M.line_bg_opacity)
     local removed_line_bg = blend(removed_fg, normal_bg, M.line_bg_opacity)
-    local normal_blend = blend(normal_fg, normal_bg, M.bg_opacity)
+    local normal_blend = blend(normal_fg, normal_bg, M.neutral_opacity)
     local tree_cursor_bg = blend(normal_fg, normal_bg, 0.14)
     local tree_panel_bg = blend(normal_fg, normal_bg, 0.03)
 
@@ -125,9 +132,10 @@ local function apply_highlights(overrides)
         -- Foreground highlights
         DifftAddedFg = { fg = added_fg, bold = true },
         DifftRemovedFg = { fg = removed_fg, bold = true },
-        DifftFiller = { fg = normal_blend },
-        -- A band of the accent colour across a closed fold, with accent text.
-        DifftFold = { fg = accent_fg, bg = blend(accent_fg, normal_bg, 0.18) },
+        DifftFiller = { fg = blend(comment_fg, normal_bg, M.filler_opacity) },
+        -- A faint band of the accent colour across a closed fold, with text in
+        -- the accent colour half blended into the background.
+        DifftFold = { fg = blend(accent_fg, normal_bg, 0.5), bg = blend(accent_fg, normal_bg, 0.09) },
     }
 
     for name, default in pairs(derived) do

@@ -341,8 +341,8 @@ fold_fill ~
     Default: "━"
 
 fold_accent ~
-    Name of the highlight group whose foreground colours closed folds: the
-    text and rule, and blended into the background, the band (DifftFold).
+    Name of the highlight group whose foreground colours closed folds
+    (DifftFold).
     Falls back to Directory when the group has no foreground colour.
 
     Default: "Directory"
@@ -400,9 +400,7 @@ Review markers:
 
 Highlights automatically inherit from your colorscheme's semantic groups
 (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch
-themes. Strong background colors are derived by blending the foreground
-color with your `Normal` background at 38% opacity. Line background colors
-use half of that opacity for a lighter full-line context.
+themes.
 
 Treesitter mode (background colors):
     Group                 Default                 Description ~
@@ -447,7 +445,7 @@ Picker highlights:
     DifftPickerJjAge         Links to `Comment`      Age field in jj picker list
 
 Other:
-    DifftFiller           Derived from `Normal`   Filler lines for gaps
+    DifftFiller           Derived from `Comment`  Filler lines for gaps
     DifftFold             Derived from `Directory` Band and text of a closed fold
 
 Override in setup: >lua

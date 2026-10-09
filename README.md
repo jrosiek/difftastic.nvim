@@ -207,7 +207,7 @@ The `highlight_mode` option controls how syntax highlighting is applied:
 
 ## Highlight Groups
 
-Highlights automatically inherit from your colorscheme's semantic groups (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch themes. Strong background colors are derived by blending the foreground color with your `Normal` background at 38% opacity. Line background colors use half of that opacity for a lighter full-line context.
+Highlights automatically inherit from your colorscheme's semantic groups (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch themes.
 
 **Treesitter mode** (background colors):
 
@@ -266,7 +266,7 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 
 | Group | Default | Description |
 |-------|---------|-------------|
-| `DifftFiller` | Derived from `Normal` | Filler lines for alignment gaps |
+| `DifftFiller` | Derived from `Comment` | Filler lines for alignment gaps |
 | `DifftFold` | Derived from `fold_accent` (`Directory`) | Band and text of a closed fold of unchanged lines (used for `Folded` in the diff panes) |
 
 ## License

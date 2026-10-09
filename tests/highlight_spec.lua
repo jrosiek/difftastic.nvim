@@ -114,6 +114,17 @@ describe("derived highlight groups", function()
         assert.are.equal("#555650", hex(vim.api.nvim_get_hl(0, { name = "DifftTreeMuted" }).fg))
     end)
 
+    --- `color` half blended into the Normal background, as the fold text is.
+    local function half_to_background(color)
+        local bg = vim.api.nvim_get_hl(0, { name = "Normal" }).bg or 0x1a1b26
+        local result = 0
+        for shift = 16, 0, -8 do
+            local c, b = math.floor(color / 2 ^ shift) % 256, math.floor(bg / 2 ^ shift) % 256
+            result = result * 256 + math.floor(c * 0.5 + b * 0.5)
+        end
+        return result
+    end
+
     it("colour closed folds from the fold_accent group", function()
         vim.api.nvim_set_hl(0, "DifftTestAccent", { fg = "#ff8800" })
         local original = difft.config.fold_accent
@@ -123,7 +134,7 @@ describe("derived highlight groups", function()
         local fold = vim.api.nvim_get_hl(0, { name = "DifftFold" })
         difft.config.fold_accent = original
 
-        assert.are.equal("#ff8800", hex(fold.fg))
+        assert.are.equal(hex(half_to_background(0xff8800)), hex(fold.fg))
         -- The band blends that colour into the background.
         assert.are_not.equal(hex(fold.bg), hex(vim.api.nvim_get_hl(0, { name = "Normal" }).bg))
     end)
@@ -136,7 +147,7 @@ describe("derived highlight groups", function()
         local fold = vim.api.nvim_get_hl(0, { name = "DifftFold" })
         difft.config.fold_accent = original
 
-        assert.are.equal(vim.api.nvim_get_hl(0, { name = "Directory", link = false }).fg, fold.fg)
+        assert.are.equal(half_to_background(vim.api.nvim_get_hl(0, { name = "Directory", link = false }).fg), fold.fg)
     end)
 
     it("keep linked groups as links", function()
