@@ -105,7 +105,9 @@ Downloaded binaries are stored in: >
 :DifftToggleReviewed
     Toggle the reviewed mark of the shown file. With the cursor in the
     tree, of the file under it, or of every file in the directory under it
-    (all marked unless all already are). See |difftastic-nvim-review|.
+    (all marked unless all already are). Marking then shows the next
+    unreviewed file after the marked ones (as `]u` does); focus stays where
+    it is. See |difftastic-nvim-review|.
 
                                                                    *:DifftClose*
 :DifftClose

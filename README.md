@@ -76,7 +76,7 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftPick` | Pick a jj revision or git commit using snacks.nvim (with preview) |
 | `:DifftPickRange` | Pick end revision, then pick a parent revision as range start |
 | `:DifftClose` | Close the diff view |
-| `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor) |
+| `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor); marking moves on to the next unreviewed file |
 | `:DifftUpdate` | Update to latest release (requires `download = true`) |
 
 A new diff replaces the open one. With `multiple_diffs = true`, each diff opens in a tab of its own and the others stay open; `:Difft` for a revset already open goes to that diff's tab, and `:DifftClose` (or `q`) closes the diff of the current tab.
@@ -132,7 +132,7 @@ All keybindings are buffer-local and configurable via `setup()`. Defaults:
 | `<Tab>` | Toggle focus between file tree and diff |
 | `<CR>` | Open file under cursor (in file tree) and focus its diff pane (see `focus_diff_on_select`) |
 | `gf` | Go to file at cursor position (opens in previous tab or new tab) |
-| `R` | Toggle the reviewed mark of the shown file; in the tree, of the file or directory under the cursor |
+| `R` | Toggle the reviewed mark of the shown file; in the tree, of the file or directory under the cursor. Marking moves on to the next unreviewed file |
 | `]u` / `[u` | Next / previous file not marked as reviewed |
 | `q` | Close diff view |
 | Double-click the split between the diff panes | Give both panes the same width |

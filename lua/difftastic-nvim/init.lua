@@ -984,9 +984,35 @@ local function restore_position(state, pos)
     end
 end
 
+--- Show the next (direction 1) or previous (-1) file not marked as reviewed after
+--- file `from` (the shown file by default), in tree order and wrapping around;
+--- collapsed directories around it are opened.
+local function step_unreviewed(direction, from)
+    local state = M.state
+    local order = tree.all_files_in_order(state)
+    from = from or state.current_file_idx
+    local pos = 0
+    for i, idx in ipairs(order) do
+        if idx == from then
+            pos = i
+        end
+    end
+    for step = 1, #order do
+        local idx = order[(pos - 1 + direction * step) % #order + 1]
+        local file = state.files[idx]
+        if idx ~= from and file and not state.reviewed[file.path] then
+            tree.reveal_file(state, idx)
+            M.show_file(idx)
+            return
+        end
+    end
+    vim.notify("difftastic-nvim: no other file left to review", vim.log.levels.INFO)
+end
+
 --- Toggle the reviewed mark: in the tree, of the file under the cursor, or of all
 --- files in the directory under it (marking them all unless all are marked);
---- elsewhere, of the shown file.
+--- elsewhere, of the shown file. Marking then shows the next unreviewed file
+--- after the marked ones.
 function M.toggle_reviewed()
     local state = M.state
     local paths = {}
@@ -1010,30 +1036,15 @@ function M.toggle_reviewed()
     end
     tree.refresh_header(state)
     tree.refresh_rows(state)
-end
-
---- Show the next (direction 1) or previous (-1) file not marked as reviewed, in
---- tree order and wrapping around; collapsed directories around it are opened.
-local function step_unreviewed(direction)
-    local state = M.state
-    local order = tree.all_files_in_order(state)
-    local current = state.current_file_idx
-    local pos = 0
-    for i, idx in ipairs(order) do
-        if idx == current then
-            pos = i
+    if not all_reviewed then
+        -- The paths are in tree order: go on after the last one.
+        for idx, file in ipairs(state.files) do
+            if file.path == paths[#paths] then
+                step_unreviewed(1, idx)
+                break
+            end
         end
     end
-    for step = 1, #order do
-        local idx = order[(pos - 1 + direction * step) % #order + 1]
-        local file = state.files[idx]
-        if idx ~= current and file and not state.reviewed[file.path] then
-            tree.reveal_file(state, idx)
-            M.show_file(idx)
-            return
-        end
-    end
-    vim.notify("difftastic-nvim: no other file left to review", vim.log.levels.INFO)
 end
 
 --- Show the next file not marked as reviewed.
