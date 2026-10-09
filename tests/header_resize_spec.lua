@@ -56,7 +56,7 @@ describe("header resize", function()
     local function header_widths()
         local widths = {}
         for i, line in ipairs(lines()) do
-            if i > tree.header_lines then
+            if i > difft.state.header_lines then
                 break
             end
             widths[i] = vim.fn.strdisplaywidth(line)
@@ -96,7 +96,7 @@ describe("header resize", function()
             assert.are.equal(#before, #after)
             local function text(rows)
                 local result = {}
-                for i, row in ipairs(vim.list_slice(rows, tree.header_lines + 1)) do
+                for i, row in ipairs(vim.list_slice(rows, difft.state.header_lines + 1)) do
                     local marker = vim.fn.strcharpart(row, vim.fn.strchars(row) - 1, 1)
                     result[i] = { (vim.fn.strcharpart(row, 0, vim.fn.strchars(row) - 1):gsub("%s+$", "")), marker }
                 end
@@ -189,7 +189,7 @@ describe("header resize", function()
         end)
 
         local function tree_rows()
-            return vim.list_slice(lines(), tree.header_lines + 1)
+            return vim.list_slice(lines(), difft.state.header_lines + 1)
         end
 
         it("ends a row that does not fit with an ellipsis", function()

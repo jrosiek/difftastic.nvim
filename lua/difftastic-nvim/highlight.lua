@@ -94,6 +94,8 @@ M.linked = {
     DifftTreeReviewed = { link = "Added" },
     DifftTreeUnvisited = { link = "Directory" },
     DifftTreeRange = { link = "BlueItalic" },
+    DifftDiffTitle = { link = "Title" },
+    DifftDiffSubtitle = { link = "NonText" },
 
     -- Picker text highlights
     DifftPickerJjIconCurrent = { link = "Added" },

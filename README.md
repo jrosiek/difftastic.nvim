@@ -254,7 +254,9 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftTreeMuted` | Derived from `Comment` | Tree hints and separators |
 | `DifftTreeIndent` | Derived from `Comment` | Tree indent guide |
 | `DifftTreeChevron` | Derived from `Comment` | Directory expand/collapse chevron |
-| `DifftTreeTitle` | Derived from `Normal` | Tree header title |
+| `DifftTreeTitle` | Derived from `Normal` | Loading window title |
+| `DifftDiffTitle` | Links to `Title` | Title of the diffed commits in the tree header |
+| `DifftDiffSubtitle` | Links to `NonText` | Subtitle below it, e.g. the count of further commits |
 | `DifftTreeDivider` | Derived from `Comment` | Tree header divider |
 | `DifftTreeRange` | Links to `BlueItalic` | Tree header revset/base-head value |
 | `DifftTreeNormal` | Derived from `Normal` | Tree panel background |

@@ -687,8 +687,16 @@ end
 
 --- Build the diff view for computed files in the current tab, the diff tab.
 --- @param state table Diff state of the tab
-local function present(state, files, revset)
-    state.files = files
+--- @param result table The computed diff: `files`, the `title` and `subtitle`
+---   shown at the top of the side panel, if any, and for staged and working-tree
+---   diffs the `snapshot_time` the subtitle shows
+local function present(state, result, revset)
+    state.files = result.files
+    state.title, state.subtitle = result.title, result.subtitle
+    if result.snapshot_time then
+        local time = result.snapshot_time
+        state.subtitle = ("as of %d %s"):format(tonumber(os.date("%d", time)), os.date("%b %H:%M:%S", time))
+    end
     state.current_file_idx = 1
     state.range_kind, state.range_label = range_context(revset, M.config.vcs)
 
@@ -788,7 +796,7 @@ local function open_async(lib, revset, state)
             if vim.api.nvim_win_is_valid(record.win) then
                 vim.api.nvim_win_close(record.win, true)
             end
-            present(state, result.files, revset)
+            present(state, result, revset)
         end
         if vim.api.nvim_get_current_tabpage() == record.tab then
             build()
@@ -921,7 +929,7 @@ function M.open(revset, opts)
         return
     end
 
-    present(state, result.files, revset)
+    present(state, result, revset)
 end
 
 --- Close a diff view: the current tab's, else (without `multiple_diffs`) the

@@ -783,6 +783,81 @@ enum DiffMode {
     Staged,
 }
 
+/// A computed diff: its files, and a title for it when it has a natural one.
+pub(crate) struct Diff {
+    files: Vec<processor::DisplayFile>,
+    title: Option<DiffTitle>,
+    /// For staged and working-tree diffs, when the files were read (Unix
+    /// seconds): the snapshot the diff shows.
+    snapshot_time: Option<u64>,
+}
+
+/// A diff's title, and a less prominent subtitle.
+#[derive(Debug, PartialEq)]
+struct DiffTitle {
+    title: String,
+    subtitle: Option<String>,
+}
+
+/// Title for a diff of commits, from their titles (first lines of their
+/// messages), oldest first: the oldest title, with `+N more` as the subtitle
+/// when the diff spans N more commits. None without commits, or for a single
+/// commit without a title.
+fn diff_title(titles: &[String]) -> Option<DiffTitle> {
+    let first = titles.first()?;
+    if titles.len() == 1 {
+        return (!first.is_empty()).then(|| DiffTitle {
+            title: first.clone(),
+            subtitle: None,
+        });
+    }
+    let title = if first.is_empty() {
+        "(no description)"
+    } else {
+        first
+    };
+    Some(DiffTitle {
+        title: title.to_string(),
+        subtitle: Some(format!("+{} more", titles.len() - 1)),
+    })
+}
+
+/// The current time in Unix seconds.
+fn now_secs() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// Titles of the commits a range diff covers, oldest first, listed in `dir`. For
+/// git, the commits on the first-parent line from the old side to the new one,
+/// so a merge commit counts as one; for jj, the revisions of the revset.
+fn commit_titles(dir: &Path, range: &str, vcs: &str) -> Option<Vec<String>> {
+    let output = if vcs == "git" {
+        let (old, new) = parse_git_range(dir, range);
+        Command::new("git")
+            .args(["log", "--first-parent", "--reverse", "--format=%s"])
+            .arg(format!("{old}..{new}"))
+            .current_dir(dir)
+            .output()
+    } else {
+        Command::new("jj")
+            .args(["log", "--no-graph", "--reversed", "-r", range, "-T"])
+            .arg("description.first_line() ++ \"\\n\"")
+            .current_dir(dir)
+            .output()
+    }
+    .ok()
+    .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .collect(),
+    )
+}
+
 /// Computes the files of a diff for the mode and VCS, in the repository that
 /// contains `dir`. Touches no Lua state, so it runs on any thread; call it inside
 /// the [`job::pool`]. Every command it starts runs in an explicit directory, never
@@ -795,7 +870,7 @@ fn compute_diff(
     vcs: &str,
     max_parallel: usize,
     run: &Run,
-) -> Result<Vec<processor::DisplayFile>, DiffError> {
+) -> Result<Diff, DiffError> {
     let (mut display_files, renames) = if vcs == "git" {
         git_display_files(dir, mode, max_parallel, run)?
     } else {
@@ -822,7 +897,27 @@ fn compute_diff(
             .collect();
     }
 
-    Ok(display_files)
+    // Staged and working-tree diffs have no commits to name them after: they are
+    // named after their kind and the time of the snapshot.
+    let uncommitted = |title: &str| DiffTitle {
+        title: title.to_string(),
+        subtitle: None,
+    };
+    let (title, snapshot_time) = match mode {
+        DiffMode::Range(range) => (
+            commit_titles(dir, range, vcs).and_then(|t| diff_title(&t)),
+            None,
+        ),
+        // jj diffs the working-copy change for both.
+        _ if vcs != "git" => (Some(uncommitted("Working-copy changes")), now_secs()),
+        DiffMode::Unstaged => (Some(uncommitted("Unstaged changes")), now_secs()),
+        DiffMode::Staged => (Some(uncommitted("Staged changes")), now_secs()),
+    };
+    Ok(Diff {
+        files: display_files,
+        title,
+        snapshot_time,
+    })
 }
 
 /// The directory a diff is computed for: `dir`, or the process's current
@@ -835,15 +930,21 @@ fn diff_dir(dir: Option<String>) -> LuaResult<PathBuf> {
     }
 }
 
-/// Converts computed files into the table the Lua side gets: `{ files = { ... } }`.
-fn files_to_lua(lua: &Lua, display_files: Vec<processor::DisplayFile>) -> LuaResult<LuaTable> {
+/// Converts a computed diff into the table the Lua side gets:
+/// `{ files = { ... }, title = ..., subtitle = ..., snapshot_time = ... }`.
+fn diff_to_lua(lua: &Lua, diff: Diff) -> LuaResult<LuaTable> {
     let files_table = lua.create_table()?;
-    for (i, file) in display_files.into_iter().enumerate() {
+    for (i, file) in diff.files.into_iter().enumerate() {
         files_table.set(i + 1, file.into_lua(lua)?)?;
     }
 
     let result = lua.create_table()?;
     result.set("files", files_table)?;
+    if let Some(title) = diff.title {
+        result.set("title", title.title)?;
+        result.set("subtitle", title.subtitle)?;
+    }
+    result.set("snapshot_time", diff.snapshot_time)?;
     Ok(result)
 }
 
@@ -857,13 +958,13 @@ fn run_diff_blocking(
 ) -> LuaResult<LuaTable> {
     let run = Run::new(None);
     let dir = diff_dir(dir)?;
-    let files = job::pool()
+    let diff = job::pool()
         .install(|| compute_diff(&dir, &mode, vcs, max_parallel, &run))
         .map_err(|e| match e {
             DiffError::Failed(message) => LuaError::RuntimeError(message),
             DiffError::Cancelled => LuaError::RuntimeError("Diff cancelled".to_string()),
         })?;
-    files_to_lua(lua, files)
+    diff_to_lua(lua, diff)
 }
 
 /// Runs difftastic for a commit range, in the repository containing `dir` (the
@@ -954,6 +1055,36 @@ mod tests {
     fn test_into_lines_single_line() {
         let lines = into_lines(Some("single".to_string()));
         assert_eq!(lines, vec!["single"]);
+    }
+
+    fn titles(list: &[&str]) -> Vec<String> {
+        list.iter().map(|t| t.to_string()).collect()
+    }
+
+    fn expected(title: &str, subtitle: Option<&str>) -> Option<DiffTitle> {
+        Some(DiffTitle {
+            title: title.to_string(),
+            subtitle: subtitle.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn test_diff_title_single_commit() {
+        assert_eq!(diff_title(&titles(&["Fix it"])), expected("Fix it", None));
+        assert_eq!(diff_title(&titles(&[""])), None);
+        assert_eq!(diff_title(&[]), None);
+    }
+
+    #[test]
+    fn test_diff_title_several_commits() {
+        assert_eq!(
+            diff_title(&titles(&["First", "Second", "Third"])),
+            expected("First", Some("+2 more"))
+        );
+        assert_eq!(
+            diff_title(&titles(&["", "Second"])),
+            expected("(no description)", Some("+1 more"))
+        );
     }
 
     #[test]
