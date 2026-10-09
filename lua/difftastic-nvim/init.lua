@@ -1227,38 +1227,8 @@ function M.goto_file()
     -- Get current cursor position (row is 1-indexed, col is 0-indexed)
     local cursor = vim.api.nvim_win_get_cursor(current_win)
     local row, col = cursor[1], cursor[2]
-    local aligned = file.aligned_lines and file.aligned_lines[row]
-
-    -- Find the target line number (right side = new version)
-    local target_line
-    if aligned and aligned[2] then
-        -- Direct mapping exists
-        target_line = aligned[2] + 1 -- 0-indexed to 1-indexed
-    else
-        -- Filler line - find nearest non-filler line
-        -- Search upward first, then downward
-        for offset = 1, #file.aligned_lines do
-            -- Check above
-            if row - offset >= 1 then
-                local above = file.aligned_lines[row - offset]
-                if above and above[2] then
-                    target_line = above[2] + 1
-                    break
-                end
-            end
-            -- Check below
-            if row + offset <= #file.aligned_lines then
-                local below = file.aligned_lines[row + offset]
-                if below and below[2] then
-                    target_line = below[2] + 1
-                    break
-                end
-            end
-        end
-    end
-
-    -- Fallback to line 1 if no mapping found
-    target_line = target_line or 1
+    -- Right side = new version; from a filler row, the nearest line
+    local target_line = diff.nearest_file_line(state.right_buf, row) or 1
 
     local filepath = file.path
 

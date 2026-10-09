@@ -1062,7 +1062,8 @@ describe("double click on the split between the diff panes", function()
         focus("right_win")
         local before = widths()
 
-        double_click("right_win", 5, 2)
+        -- In the text, past the line-number column.
+        double_click("right_win", 5, 8)
 
         assert.are.same(before, widths())
         -- The default double click selects the word under the mouse.
