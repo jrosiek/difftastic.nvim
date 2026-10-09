@@ -3,6 +3,14 @@ local M = {}
 
 local FILLER = string.rep("╱", 500)
 
+--- Marks tying each real line of a side to the buffer row showing it: one per
+--- line, with the line number as its id. Rows inserted between lines (fillers)
+--- carry none, and the marks move with their lines when rows are inserted.
+local LINE_NS = vim.api.nvim_create_namespace("difft-lines")
+
+--- The pane's 'statuscolumn': line numbers of the file, not of the buffer.
+M.STATUSCOLUMN = "%!v:lua.require'difftastic-nvim.diff'.statuscolumn()"
+
 --- Ensure treesitter is attached for a buffer/filetype.
 --- @param buf number
 --- @param ft string
@@ -17,10 +25,6 @@ local function ensure_treesitter(buf, ft)
 
     pcall(vim.treesitter.start, buf, ft)
 end
-
---- Line positions where hunks start (1-indexed)
---- @type number[]
-M.hunk_positions = {}
 
 --- Maps difftastic language names to Vim filetypes
 local FILETYPES = {
@@ -52,6 +56,7 @@ local function setup_diff_buffer(buf)
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false
     vim.bo[buf].modifiable = false
+    vim.b[buf].difftastic_pane = true
 end
 
 --- Set window options for diff windows.
@@ -59,7 +64,11 @@ end
 local function setup_diff_window(win)
     vim.wo[win].scrollbind = true
     vim.wo[win].cursorbind = true
+    -- A wrapped line takes more screen rows on one side than the other, which
+    -- 'scrollbind' does not make up for; scroll long lines sideways instead.
+    vim.wo[win].wrap = false
     vim.wo[win].number = true
+    vim.wo[win].statuscolumn = M.STATUSCOLUMN
     vim.wo[win].signcolumn = "no"
 end
 
@@ -137,19 +146,16 @@ local function apply_diff_highlights(buf, ns, line, content, highlights, range_h
     end
 end
 
---- Open the side-by-side diff panes.
+--- Open the side-by-side diff panes to the right of the current window, which
+--- keeps its place. Focus ends in the head (right) pane.
 --- @param state table Plugin state
 function M.open(state)
-    -- Move to the rightmost window (away from tree)
-    vim.cmd("wincmd l")
-
-    -- Current window becomes left diff pane
+    vim.cmd("rightbelow vsplit")
     state.left_win = vim.api.nvim_get_current_win()
     state.left_buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_win_set_buf(state.left_win, state.left_buf)
 
-    -- Create right diff pane
-    vim.cmd("vsplit")
+    vim.cmd("rightbelow vsplit")
     state.right_win = vim.api.nvim_get_current_win()
     state.right_buf = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_win_set_buf(state.right_win, state.right_buf)
@@ -158,6 +164,8 @@ function M.open(state)
     setup_diff_buffer(state.right_buf)
     setup_diff_window(state.left_win)
     setup_diff_window(state.right_win)
+    -- Keep sideways scrolling in step too ('scrollopt' is global).
+    vim.opt.scrollopt:append("hor")
 
     -- :vsplit gives the new (current) pane at least 'winwidth' columns, so in a
     -- narrow terminal the base pane would get what is left; split evenly.
@@ -167,15 +175,20 @@ end
 
 --- Render a file's diff content into the left/right panes.
 --- @param state table Plugin state
---- @param file table File data with rows, hunk_starts, language
+--- @param file table File from the library (`base`, `head`, `hunks`, `language`)
 function M.render(state, file)
     local config = require("difftastic-nvim").config
+    require("difftastic-nvim.layout").ensure_rows(file)
     local rows = file.rows or {}
 
-    M.hunk_positions = {}
+    -- Rows where hunks start (1-based).
+    state.hunk_positions = {}
     for _, pos in ipairs(file.hunk_starts or {}) do
-        table.insert(M.hunk_positions, pos + 1)
+        table.insert(state.hunk_positions, pos + 1)
     end
+
+    vim.api.nvim_buf_clear_namespace(state.left_buf, LINE_NS, 0, -1)
+    vim.api.nvim_buf_clear_namespace(state.right_buf, LINE_NS, 0, -1)
 
     if #rows == 0 then
         vim.bo[state.left_buf].modifiable = true
@@ -199,6 +212,15 @@ function M.render(state, file)
     vim.api.nvim_buf_set_lines(state.right_buf, 0, -1, false, right_lines)
     vim.bo[state.left_buf].modifiable = false
     vim.bo[state.right_buf].modifiable = false
+
+    for i, lines in ipairs(file.aligned_lines or {}) do
+        if lines[1] then
+            vim.api.nvim_buf_set_extmark(state.left_buf, LINE_NS, i - 1, 0, { id = lines[1] + 1 })
+        end
+        if lines[2] then
+            vim.api.nvim_buf_set_extmark(state.right_buf, LINE_NS, i - 1, 0, { id = lines[2] + 1 })
+        end
+    end
 
     -- Apply syntax highlighting based on mode
     local use_treesitter = config.highlight_mode ~= "difftastic"
@@ -249,6 +271,73 @@ function M.render(state, file)
     vim.api.nvim_win_set_cursor(state.right_win, { 1, 0 })
 end
 
+--- The file line shown on a pane's buffer row.
+--- @param buf number Pane buffer
+--- @param row number Buffer row (1-based)
+--- @return number|nil line File line (1-based), nil on a filler row
+function M.file_line(buf, row)
+    local mark = vim.api.nvim_buf_get_extmarks(buf, LINE_NS, { row - 1, 0 }, { row - 1, -1 }, { limit = 1 })[1]
+    return mark and mark[1]
+end
+
+--- The buffer row showing a file line.
+--- @param buf number Pane buffer
+--- @param line number File line (1-based)
+--- @return number|nil row Buffer row (1-based), nil when the side has no such line
+function M.buf_row(buf, line)
+    local pos = vim.api.nvim_buf_get_extmark_by_id(buf, LINE_NS, line, {})
+    return pos[1] and pos[1] + 1
+end
+
+--- The file line on a buffer row or, from a filler row, the nearest one (the one
+--- above on a tie).
+--- @param buf number Pane buffer
+--- @param row number Buffer row (1-based)
+--- @return number|nil line File line (1-based), nil when the side has no lines
+function M.nearest_file_line(buf, row)
+    local above = vim.api.nvim_buf_get_extmarks(buf, LINE_NS, { row - 1, 0 }, 0, { limit = 1 })[1]
+    local below = vim.api.nvim_buf_get_extmarks(buf, LINE_NS, { row - 1, 0 }, -1, { limit = 1 })[1]
+    if above and (not below or row - 1 - above[2] <= below[2] - (row - 1)) then
+        return above[1]
+    end
+    return below and below[1]
+end
+
+--- The 'statuscolumn' of a pane: the file line number (or the relative number,
+--- with 'relativenumber') on rows showing a line, blank on fillers and closed
+--- folds.
+--- @return string
+function M.statuscolumn()
+    local win = vim.g.statusline_winid
+    local buf = vim.api.nvim_win_get_buf(win)
+    local width = math.max(vim.wo[win].numberwidth - 1, #tostring(vim.api.nvim_buf_line_count(buf)))
+    local line
+    if vim.v.virtnum ~= 0 then
+        line = nil
+    elseif vim.b[buf].difftastic_pane then
+        -- None on a closed fold: its line shows the folded lines' count.
+        local folded = vim.api.nvim_win_call(win, function()
+            return vim.fn.foldclosed(vim.v.lnum) ~= -1
+        end)
+        line = not folded and M.file_line(buf, vim.v.lnum) or nil
+    else
+        -- Another buffer opened in the pane: its own line numbers
+        line = vim.v.lnum
+    end
+    local text, group = "", "LineNr"
+    if line then
+        if vim.wo[win].relativenumber and vim.v.relnum ~= 0 then
+            text = tostring(vim.v.relnum)
+        else
+            text = tostring(line)
+            if vim.v.relnum == 0 and vim.wo[win].cursorline then
+                group = "CursorLineNr"
+            end
+        end
+    end
+    return ("%%#%s#%s%s "):format(group, string.rep(" ", width - #text), text)
+end
+
 --- Get the current diff window (left or right).
 --- @param state table Plugin state
 --- @return number|nil Window handle or nil if invalid
@@ -265,7 +354,7 @@ end
 --- @param state table Plugin state
 --- @return boolean True if jumped to a hunk, false if at/past last hunk
 function M.next_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return false
     end
     local win = get_diff_win(state)
@@ -274,7 +363,7 @@ function M.next_hunk(state)
     end
 
     local line = vim.api.nvim_win_get_cursor(win)[1]
-    for _, pos in ipairs(M.hunk_positions) do
+    for _, pos in ipairs(state.hunk_positions) do
         if pos > line then
             vim.api.nvim_win_set_cursor(win, { pos, 0 })
             return true
@@ -287,7 +376,7 @@ end
 --- @param state table Plugin state
 --- @return boolean True if jumped to a hunk, false if at/before first hunk
 function M.prev_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return false
     end
     local win = get_diff_win(state)
@@ -296,9 +385,9 @@ function M.prev_hunk(state)
     end
 
     local line = vim.api.nvim_win_get_cursor(win)[1]
-    for i = #M.hunk_positions, 1, -1 do
-        if M.hunk_positions[i] < line then
-            vim.api.nvim_win_set_cursor(win, { M.hunk_positions[i], 0 })
+    for i = #state.hunk_positions, 1, -1 do
+        if state.hunk_positions[i] < line then
+            vim.api.nvim_win_set_cursor(win, { state.hunk_positions[i], 0 })
             return true
         end
     end
@@ -308,24 +397,24 @@ end
 --- Jump to the first hunk.
 --- @param state table Plugin state
 function M.first_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return
     end
     local win = get_diff_win(state)
     if win then
-        vim.api.nvim_win_set_cursor(win, { M.hunk_positions[1], 0 })
+        vim.api.nvim_win_set_cursor(win, { state.hunk_positions[1], 0 })
     end
 end
 
 --- Jump to the last hunk.
 --- @param state table Plugin state
 function M.last_hunk(state)
-    if #M.hunk_positions == 0 then
+    if #state.hunk_positions == 0 then
         return
     end
     local win = get_diff_win(state)
     if win then
-        vim.api.nvim_win_set_cursor(win, { M.hunk_positions[#M.hunk_positions], 0 })
+        vim.api.nvim_win_set_cursor(win, { state.hunk_positions[#state.hunk_positions], 0 })
     end
 end
 

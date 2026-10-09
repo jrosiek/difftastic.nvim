@@ -1,3 +1,14 @@
+> **This is a fork of [clabby/difftastic.nvim](https://github.com/clabby/difftastic.nvim)**, focused on reviewing diffs comfortably, especially large ones.
+>
+> - **Never blocks Neovim.** Diffs are computed in the background, files in parallel, with live progress; `q` cancels.
+> - **Built for review.** Mark files as reviewed (`R`), jump to the next unreviewed one (`]u` / `[u`), see progress in the panel (`3/12 reviewed`). Each file remembers where you left it.
+> - **Less noise.** Unchanged lines are folded around each change, with the fold state kept in step between both panes.
+> - **Real line numbers.** The panes show each file's own line numbers, not buffer rows; `gf` opens the file at the right line.
+> - **Several diffs at once.** With `multiple_diffs = true`, each diff gets its own tab.
+> - **A layout that behaves.** Panes keep their split on resize, double-click a split to reset it, and the colours follow your theme, including NvChad's theme switcher.
+>
+> Everything else works as upstream; this README describes the fork.
+
 # `difftastic.nvim`
 
 A Neovim plugin that displays [`difftastic`](https://github.com/Wilfred/difftastic)'s structural diffs in a side-by-side
@@ -76,8 +87,10 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftPick` | Pick a jj revision or git commit using snacks.nvim (with preview) |
 | `:DifftPickRange` | Pick end revision, then pick a parent revision as range start |
 | `:DifftClose` | Close the diff view |
-| `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor) |
+| `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor); marking moves on to the next unreviewed file |
 | `:DifftUpdate` | Update to latest release (requires `download = true`) |
+
+A new diff replaces the open one. With `multiple_diffs = true`, each diff opens in a tab of its own and the others stay open; `:Difft` for a revset already open goes to that diff's tab, and `:DifftClose` (or `q`) closes the diff of the current tab.
 
 ### Examples (jj)
 
@@ -130,7 +143,7 @@ All keybindings are buffer-local and configurable via `setup()`. Defaults:
 | `<Tab>` | Toggle focus between file tree and diff |
 | `<CR>` | Open file under cursor (in file tree) and focus its diff pane (see `focus_diff_on_select`) |
 | `gf` | Go to file at cursor position (opens in previous tab or new tab) |
-| `R` | Toggle the reviewed mark of the shown file; in the tree, of the file or directory under the cursor |
+| `R` | Toggle the reviewed mark of the shown file; in the tree, of the file or directory under the cursor. Marking moves on to the next unreviewed file |
 | `]u` / `[u` | Next / previous file not marked as reviewed |
 | `q` | Close diff view |
 | Double-click the split between the diff panes | Give both panes the same width |
@@ -151,7 +164,8 @@ require("difftastic-nvim").setup({
     scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
     focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
     auto_review = false,          -- Mark a file as reviewed when it is shown (default: false)
-    max_parallel_difft_calls = 0, -- difft processes run at once for a git diff; 0 = one per CPU (default: 0)
+    multiple_diffs = false,       -- Open each diff in its own tab beside the others instead of replacing the open one (default: false)
+    max_parallel_difft_calls = 0, -- Files one diff processes at once; 0 = one per CPU (default: 0)
     context_size = 3,             -- Unchanged lines kept around each change; the rest is folded. 0 turns folding off (default: 3)
     min_fold_size = 2,            -- Smallest run of unchanged lines that gets folded (default: 2)
     fold_by_default = true,       -- Whether those folds start closed (default: true)
@@ -204,7 +218,7 @@ The `highlight_mode` option controls how syntax highlighting is applied:
 
 ## Highlight Groups
 
-Highlights automatically inherit from your colorscheme's semantic groups (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch themes. Strong background colors are derived by blending the foreground color with your `Normal` background at 38% opacity. Line background colors use half of that opacity for a lighter full-line context.
+Highlights automatically inherit from your colorscheme's semantic groups (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch themes.
 
 **Treesitter mode** (background colors):
 
@@ -263,7 +277,7 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 
 | Group | Default | Description |
 |-------|---------|-------------|
-| `DifftFiller` | Derived from `Normal` | Filler lines for alignment gaps |
+| `DifftFiller` | Derived from `Comment` | Filler lines for alignment gaps |
 | `DifftFold` | Derived from `fold_accent` (`Directory`) | Band and text of a closed fold of unchanged lines (used for `Folded` in the diff panes) |
 
 ## License

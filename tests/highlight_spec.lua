@@ -114,6 +114,17 @@ describe("derived highlight groups", function()
         assert.are.equal("#555650", hex(vim.api.nvim_get_hl(0, { name = "DifftTreeMuted" }).fg))
     end)
 
+    --- `color` half blended into the Normal background, as the fold text is.
+    local function half_to_background(color)
+        local bg = vim.api.nvim_get_hl(0, { name = "Normal" }).bg or 0x1a1b26
+        local result = 0
+        for shift = 16, 0, -8 do
+            local c, b = math.floor(color / 2 ^ shift) % 256, math.floor(bg / 2 ^ shift) % 256
+            result = result * 256 + math.floor(c * 0.5 + b * 0.5)
+        end
+        return result
+    end
+
     it("colour closed folds from the fold_accent group", function()
         vim.api.nvim_set_hl(0, "DifftTestAccent", { fg = "#ff8800" })
         local original = difft.config.fold_accent
@@ -123,7 +134,7 @@ describe("derived highlight groups", function()
         local fold = vim.api.nvim_get_hl(0, { name = "DifftFold" })
         difft.config.fold_accent = original
 
-        assert.are.equal("#ff8800", hex(fold.fg))
+        assert.are.equal(hex(half_to_background(0xff8800)), hex(fold.fg))
         -- The band blends that colour into the background.
         assert.are_not.equal(hex(fold.bg), hex(vim.api.nvim_get_hl(0, { name = "Normal" }).bg))
     end)
@@ -136,7 +147,7 @@ describe("derived highlight groups", function()
         local fold = vim.api.nvim_get_hl(0, { name = "DifftFold" })
         difft.config.fold_accent = original
 
-        assert.are.equal(vim.api.nvim_get_hl(0, { name = "Directory", link = false }).fg, fold.fg)
+        assert.are.equal(half_to_background(vim.api.nvim_get_hl(0, { name = "Directory", link = false }).fg), fold.fg)
     end)
 
     it("keep linked groups as links", function()
@@ -151,6 +162,75 @@ describe("derived highlight groups", function()
         for name, link in pairs(links) do
             assert.are.equal(link, vim.api.nvim_get_hl(0, { name = name }).link, name)
         end
+    end)
+end)
+
+describe("derived highlight groups with NvChad", function()
+    it("follow a theme NvChad switches to (User NvThemeReload, no ColorScheme)", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({
+            "nvim",
+            "--clean",
+            "--headless",
+            "--embed",
+            "--cmd",
+            "set rtp^=" .. root,
+        }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("require('difftastic-nvim.highlight').setup({})")
+        -- base46 sets the groups directly, then fires its own event.
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); vim.api.nvim_set_hl(0, 'Comment', { fg = '#555650' })")
+        local before = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        remote("vim.api.nvim_exec_autocmds('User', { pattern = 'NvThemeReload' })")
+        -- Derived on the next tick.
+        remote("vim.wait(50)")
+        local after = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        vim.fn.jobstop(child)
+
+        assert.are_not.equal("#555650", hex(before))
+        assert.are.equal("#555650", hex(after))
+    end)
+
+    it("catch up on the next window switch with colours set after the event", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed", "--cmd", "set rtp^=" .. root }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("require('difftastic-nvim.highlight').setup({}); vim.cmd('vsplit')")
+        -- The event fires while the old colours are still in place (NvChad's
+        -- picker), the new ones arrive afterwards.
+        remote("vim.api.nvim_exec_autocmds('User', { pattern = 'NvThemeReload' }); vim.wait(50)")
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); vim.api.nvim_set_hl(0, 'Comment', { fg = '#555650' })")
+        local stale = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        remote("vim.cmd('wincmd w')")
+        local fresh = remote("return vim.api.nvim_get_hl(0, { name = 'DifftTreeMuted' }).fg")
+        vim.fn.jobstop(child)
+
+        assert.are_not.equal("#555650", hex(stale))
+        assert.are.equal("#555650", hex(fresh))
+    end)
+end)
+
+describe("derived highlight groups and window highlights", function()
+    it("ignore the current window's winhighlight when reading the theme", function()
+        local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
+        local child = vim.fn.jobstart({ "nvim", "--clean", "--headless", "--embed", "--cmd", "set rtp^=" .. root }, { rpc = true })
+        local function remote(code)
+            return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+        end
+        remote("vim.api.nvim_set_hl(0, 'Normal', { fg = '#f8f8f2', bg = '#272822' }); require('difftastic-nvim.highlight').setup({})")
+        local before = remote("return { vim.api.nvim_get_hl(0, { name = 'DifftTreeFile' }), vim.api.nvim_get_hl(0, { name = 'DifftAdded' }) }")
+        -- A window like the side panel, whose Normal is a background-only group.
+        remote("vim.cmd('vsplit'); vim.wo.winhighlight = 'Normal:DifftTreeNormal,NormalNC:DifftTreeNormal'; vim.cmd('wincmd w'); vim.cmd('wincmd w')")
+        remote("require('difftastic-nvim.highlight').refresh()")
+        local after = remote("return { vim.api.nvim_get_hl(0, { name = 'DifftTreeFile' }), vim.api.nvim_get_hl(0, { name = 'DifftAdded' }) }")
+        vim.fn.jobstop(child)
+
+        assert.are.equal("#f8f8f2", hex(before[1].fg))
+        assert.are.same(before, after)
     end)
 end)
 

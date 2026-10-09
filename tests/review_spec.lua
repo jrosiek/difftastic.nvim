@@ -54,7 +54,7 @@ describe("review markers", function()
     local function row(match)
         local buf = difft.state.tree_buf
         for linenr = 1, vim.api.nvim_buf_line_count(buf) do
-            local node = tree.tree:get_node(linenr)
+            local node = difft.state.tree:get_node(linenr)
             if node and match(node) then
                 return linenr, vim.api.nvim_buf_get_lines(buf, linenr - 1, linenr, false)[1]
             end
@@ -132,10 +132,51 @@ describe("review markers", function()
         press("R")
         assert.are.equal("✓", marker("dir/b.txt"))
         assert.is_true(difft.state.reviewed["dir/b.txt"])
+        show("dir/b.txt")
         vim.api.nvim_set_current_win(difft.state.left_win)
         press("R")
         assert.are.equal(" ", marker("dir/b.txt"))
         assert.is_nil(difft.state.reviewed["dir/b.txt"])
+    end)
+
+    it("moves on to the next unreviewed file once R marks the shown one", function()
+        difft.open("HEAD")
+        show("dir/b.txt")
+        vim.api.nvim_set_current_win(difft.state.left_win)
+
+        press("R")
+        assert.are.equal("dir/c.txt", difft.state.shown_path)
+        assert.are.equal(difft.state.left_win, vim.api.nvim_get_current_win())
+        -- Unmarking leaves the shown file alone.
+        show("dir/b.txt")
+        press("R")
+        assert.are.equal("dir/b.txt", difft.state.shown_path)
+    end)
+
+    it("moves on from the tree to the next unreviewed file after the marked row", function()
+        difft.open("HEAD")
+        in_tree_on((file_row("dir/c.txt")))
+
+        press("R")
+
+        assert.is_true(difft.state.reviewed["dir/c.txt"])
+        assert.are.equal("a.txt", difft.state.shown_path)
+        -- Focus stays in the tree, on the row of the file now shown.
+        assert.are.equal(difft.state.tree_win, vim.api.nvim_get_current_win())
+        assert.are.equal((file_row("a.txt")), vim.api.nvim_win_get_cursor(difft.state.tree_win)[1])
+    end)
+
+    it("moves on from the tree past a directory it marks", function()
+        difft.open("HEAD")
+        in_tree_on((dir_row("dir")))
+
+        press("R")
+
+        assert.are.equal("a.txt", difft.state.shown_path)
+        -- Unmarking keeps the shown file.
+        in_tree_on((dir_row("dir")))
+        press("R")
+        assert.are.equal("a.txt", difft.state.shown_path)
     end)
 
     it("toggles the file under the cursor with R in the tree, shown or not", function()
@@ -146,8 +187,7 @@ describe("review markers", function()
 
         assert.are.equal("✓", marker("z.txt"))
         assert.is_nil(difft.state.visited["z.txt"])
-        -- The tree cursor stays on the row.
-        assert.are.equal((file_row("z.txt")), vim.api.nvim_win_get_cursor(difft.state.tree_win)[1])
+        in_tree_on((file_row("z.txt")))
         press("R")
         assert.are.equal("•", marker("z.txt"))
     end)
@@ -321,6 +361,14 @@ describe("review markers", function()
             return difft.state.shown_path
         end
 
+        --- Mark files as reviewed without moving on (as `R` would).
+        local function mark(paths)
+            for _, path in ipairs(paths) do
+                difft.state.reviewed[path] = true
+            end
+            tree.refresh_rows(difft.state)
+        end
+
         it("goes to the next and previous unreviewed file in tree order", function()
             difft.open("HEAD")
             assert.are.equal("dir/b.txt", shown())
@@ -334,10 +382,7 @@ describe("review markers", function()
 
         it("skips reviewed files and wraps around", function()
             difft.open("HEAD")
-            in_tree_on((file_row("dir/c.txt")))
-            press("R")
-            in_tree_on((file_row("a.txt")))
-            press("R")
+            mark({ "dir/c.txt", "a.txt" })
             vim.api.nvim_set_current_win(difft.state.right_win)
 
             press("]u")
@@ -359,13 +404,8 @@ describe("review markers", function()
 
         it("says so when no other file is left to review", function()
             difft.open("HEAD")
-            in_tree_on((dir_row("dir")))
-            press("R")
-            for _, path in ipairs({ "a.txt", "z.txt" }) do
-                in_tree_on((file_row(path)))
-                press("R")
-            end
-            -- The shown file was reviewed with its directory; unmark it.
+            mark({ "dir/b.txt", "dir/c.txt", "a.txt", "z.txt" })
+            -- Unmark the shown file.
             vim.api.nvim_set_current_win(difft.state.right_win)
             press("R")
             local messages, original_notify = {}, vim.notify
@@ -381,18 +421,35 @@ describe("review markers", function()
             assert.truthy(messages[1]:find("no other file left to review", 1, true))
         end)
 
+        it("stays on the last file R marks when none is left to review", function()
+            difft.open("HEAD")
+            mark({ "dir/c.txt", "a.txt", "z.txt" })
+            vim.api.nvim_set_current_win(difft.state.right_win)
+            local messages, original_notify = {}, vim.notify
+            vim.notify = function(msg)
+                table.insert(messages, msg)
+            end
+
+            press("R")
+            vim.notify = original_notify
+
+            assert.are.equal("dir/b.txt", shown())
+            assert.is_true(difft.state.reviewed["dir/b.txt"])
+            assert.truthy(messages[1] and messages[1]:find("no other file left to review", 1, true))
+        end)
+
         it("opens a collapsed directory around the file it goes to", function()
             difft.open("HEAD")
             show("a.txt")
-            local node = tree.tree:get_node((dir_row("dir")))
+            local node = difft.state.tree:get_node((dir_row("dir")))
             node:collapse()
-            tree.tree:render()
+            difft.state.tree:render()
             vim.api.nvim_set_current_win(difft.state.right_win)
 
             press("[u")
 
             assert.are.equal("dir/c.txt", shown())
-            assert.is_true(tree.tree:get_node((dir_row("dir"))):is_expanded())
+            assert.is_true(difft.state.tree:get_node((dir_row("dir"))):is_expanded())
             local ns = vim.api.nvim_create_namespace("difft-tree-current")
             local marks = vim.api.nvim_buf_get_extmarks(difft.state.tree_buf, ns, 0, -1, {})
             assert.are.equal(file_row("dir/c.txt") - 1, marks[1][2])
@@ -429,6 +486,7 @@ describe("review markers", function()
             in_tree_on((dir_row("dir")))
             press("R")
             assert.truthy(file_line():find("2/4 reviewed", 1, true), file_line())
+            in_tree_on((dir_row("dir")))
             press("R")
             assert.truthy(file_line():find("4 files", 1, true), file_line())
         end)
@@ -470,6 +528,7 @@ describe("review markers", function()
             in_tree_on((file_row("dir/c.txt")))
             press("R")
             assert.are.equal("✓", dir_marker())
+            in_tree_on((file_row("dir/c.txt")))
             press("R")
             assert.are.equal(" ", dir_marker())
         end)

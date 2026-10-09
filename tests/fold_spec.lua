@@ -309,10 +309,30 @@ describe("folds in the diff view", function()
         local text, width = result[1], result[2]
         assert.are.equal(1, #text)
         assert.are.equal("DifftFold", text[1][2])
-        -- The label centred in a rule of the fill character.
-        local label = " ▸ 14 unchanged lines "
-        local left = math.max(2, math.floor((width - vim.fn.strdisplaywidth(label)) / 2))
-        assert.are.equal(("━"):rep(left) .. label, text[1][1])
+        assert.are.equal(fold.label(14, width, "━"), text[1][1])
+    end)
+
+    it("shortens the fold text evenly as the pane narrows", function()
+        local function line(width)
+            return fold.label(14, width, "-")
+        end
+        -- " ▸ 14 unchanged lines " is 22 columns, " ▸ 14 unchanged " 16,
+        -- " ▸ 14 " 6, "▸ 14" 4.
+        assert.are.equal("---- ▸ 14 unchanged lines ", line(30))
+        assert.are.equal("-- ▸ 14 unchanged lines ", line(26))
+        assert.are.equal("---- ▸ 14 unchanged ", line(25))
+        assert.are.equal("-- ▸ 14 unchanged ", line(20))
+        assert.are.equal("------ ▸ 14 ", line(19))
+        assert.are.equal("-- ▸ 14 ", line(10))
+        assert.are.equal("- ▸ 14 ", line(9))
+        assert.are.equal("- ▸ 14 ", line(8))
+        -- No room for a fill character on both sides: none, padded with spaces.
+        assert.are.equal(" ▸ 14  ", line(7))
+        assert.are.equal(" ▸ 14 ", line(6))
+        assert.are.equal("▸ 14 ", line(5))
+        assert.are.equal("▸ 14", line(4))
+        assert.are.equal("14 ", line(3))
+        assert.are.equal("14", line(2))
     end)
 
     it("centres the label in a wide pane", function()

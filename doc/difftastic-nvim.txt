@@ -97,15 +97,21 @@ Downloaded binaries are stored in: >
     copy vs @). The `--staged` flag shows @ changes since jj has no staging
     area. To view the parent change explicitly, use `:Difft @-` which is
     equivalent to `jj diff -r @-`.
+
+    A new diff replaces the open one. With `multiple_diffs = true`, each
+    diff opens in a tab of its own and the others stay open; `:Difft` for a
+    revset already open goes to that diff's tab.
                                                           *:DifftToggleReviewed*
 :DifftToggleReviewed
     Toggle the reviewed mark of the shown file. With the cursor in the
     tree, of the file under it, or of every file in the directory under it
-    (all marked unless all already are). See |difftastic-nvim-review|.
+    (all marked unless all already are). Marking then shows the next
+    unreviewed file after the marked ones (as `]u` does); focus stays where
+    it is. See |difftastic-nvim-review|.
 
                                                                    *:DifftClose*
 :DifftClose
-    Close the diff view.
+    Close the diff view (with `multiple_diffs`, the current tab's).
 
                                                                    *:DifftUpdate*
 :DifftUpdate
@@ -175,7 +181,8 @@ Call the setup function with your options: >lua
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
         focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
         auto_review = false,  -- Mark a file as reviewed when it is shown (default: false)
-        max_parallel_difft_calls = 0, -- difft processes at once (git); 0 = one per CPU
+        multiple_diffs = false, -- Each diff in its own tab beside the others (default: false)
+        max_parallel_difft_calls = 0, -- files processed at once; 0 = one per CPU
         context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
         min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)
         fold_by_default = true, -- Folds start closed (default: true)
@@ -334,8 +341,8 @@ fold_fill ~
     Default: "━"
 
 fold_accent ~
-    Name of the highlight group whose foreground colours closed folds: the
-    text and rule, and blended into the background, the band (DifftFold).
+    Name of the highlight group whose foreground colours closed folds
+    (DifftFold).
     Falls back to Directory when the group has no foreground colour.
 
     Default: "Directory"
@@ -343,10 +350,9 @@ fold_accent ~
     These settings apply to files shown after they change.
 
 max_parallel_difft_calls ~
-    For a git diff, difft runs once per changed file. This is the most
-    difft processes run at the same time; 0 runs one per CPU. Lower it to
-    leave CPUs free; 1 runs one file at a time. Must be a whole number, 0 or
-    more; other values are reported and ignored. jj diffs are not affected.
+    The most changed files one diff processes at the same time; 0 runs one
+    per CPU. Lower it to leave CPUs free; 1 runs one file at a time. Must be
+    a whole number, 0 or more; other values are reported and ignored.
 
     Default: 0
 
@@ -394,9 +400,7 @@ Review markers:
 
 Highlights automatically inherit from your colorscheme's semantic groups
 (`Added`, `Removed`, `Directory`, `Normal`) and update when you switch
-themes. Strong background colors are derived by blending the foreground
-color with your `Normal` background at 38% opacity. Line background colors
-use half of that opacity for a lighter full-line context.
+themes.
 
 Treesitter mode (background colors):
     Group                 Default                 Description ~
@@ -441,7 +445,7 @@ Picker highlights:
     DifftPickerJjAge         Links to `Comment`      Age field in jj picker list
 
 Other:
-    DifftFiller           Derived from `Normal`   Filler lines for gaps
+    DifftFiller           Derived from `Comment`  Filler lines for gaps
     DifftFold             Derived from `Directory` Band and text of a closed fold
 
 Override in setup: >lua

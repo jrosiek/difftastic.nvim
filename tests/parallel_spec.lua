@@ -13,6 +13,7 @@ if not pcall(require, "nui.tree") then
 end
 
 local binary = require("difftastic-nvim.binary")
+local layout = require("difftastic-nvim.layout")
 
 local lib_ok, lib = pcall(binary.get)
 local has_tools = vim.fn.executable("difft") == 1 and vim.fn.executable("git") == 1
@@ -134,6 +135,8 @@ describe("parallel difft", function()
         local result = call()
         local files = {}
         for _, file in ipairs(result.files) do
+            -- The rows both panes show, rebuilt from each side's lines and fillers.
+            layout.ensure_rows(file)
             files[file.path] = file
         end
         return files, result.files
