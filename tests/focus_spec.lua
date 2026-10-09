@@ -786,6 +786,28 @@ describe("pane sync", function()
             assert.are.same(dragged, widths())
         end)
 
+        it("keeps a dragged split through a file shown in one pane", function()
+            local w = widths()
+            remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.left_win, ...)", math.floor((w.left + w.right) / 4))
+            settle()
+            local dragged = widths()
+
+            -- An added file: the base pane closes, the head pane takes its width.
+            remote([[
+                local difft = require("difftastic-nvim")
+                difft.state.files[2].status = "created"
+                difft.show_file(2)
+            ]])
+            settle()
+            assert.is_false(remote("local s = require('difftastic-nvim').state; return s.left_win ~= nil and vim.api.nvim_win_is_valid(s.left_win)"))
+            set_columns(240)
+            set_columns(200)
+            remote("require('difftastic-nvim').show_file(1)")
+            settle()
+
+            assert.are.same(dragged, widths())
+        end)
+
         it("applies a resize made in another tab when the diff tab is entered", function()
             local before = widths()
             local diff_tab = remote("return vim.api.nvim_get_current_tabpage()")

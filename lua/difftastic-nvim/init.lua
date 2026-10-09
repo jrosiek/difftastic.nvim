@@ -249,6 +249,47 @@ function M.setup(opts)
     binary.ensure_exists(M.config.download)
 end
 
+--- Whether a diff view's windows are still there (the side panel always is while
+--- it is open; a pane is closed while a file has one side only).
+--- @param state table Diff state
+local function view_open(state)
+    return state.tree_win ~= nil and vim.api.nvim_win_is_valid(state.tree_win)
+end
+
+--- Whether both diff panes are shown.
+--- @param state table Diff state
+local function both_panes(state)
+    return state.left_win ~= nil
+        and state.right_win ~= nil
+        and vim.api.nvim_win_is_valid(state.left_win)
+        and vim.api.nvim_win_is_valid(state.right_win)
+end
+
+--- The widths of the base and head panes.
+local function pane_widths(state)
+    return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+end
+
+--- Remember the widths the plugin itself gave the panes, so that its own resizes
+--- are not taken for a split the user dragged.
+local function remember_pane_widths(state)
+    if both_panes(state) then
+        state.pane_widths = { pane_widths(state) }
+    end
+end
+
+--- Split the space of the two panes in their ratio (`state.pane_ratio`), as
+--- after Neovim was resized or a pane was opened again.
+--- @param state table Diff state
+function M.restore_pane_split(state)
+    if not both_panes(state) then
+        return
+    end
+    local l, r = pane_widths(state)
+    vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * (state.pane_ratio or 0.5) + 0.5))
+    remember_pane_widths(state)
+end
+
 --- Keep the two diff panes in step where Neovim does not:
 --- - Resizing Neovim gives the whole change in width to the rightmost window. The
 ---   panes keep splitting the space next to the tree in their last ratio instead.
@@ -256,41 +297,31 @@ end
 --- - 'scrollbind' only follows the current window, so mouse-wheel scrolling the
 ---   other pane left its partner behind. Rows are aligned in both panes, so the
 ---   partner takes the same top line.
---- The autocmds remove themselves once the view is closed.
+--- The autocmds remove themselves once the view is closed. While a file shown has
+--- one side only (one pane), they leave the panes' ratio alone.
 --- @param state table Plugin state of the opened view
 local function setup_pane_sync(state)
     local function valid()
-        return state.left_win
-            and state.right_win
-            and vim.api.nvim_win_is_valid(state.left_win)
-            and vim.api.nvim_win_is_valid(state.right_win)
-    end
-    local function widths()
-        return vim.api.nvim_win_get_width(state.left_win), vim.api.nvim_win_get_width(state.right_win)
+        return both_panes(state)
     end
 
     -- The base pane's share of the space next to the tree, kept as a float so that
     -- repeated resizes do not round it away. The panes open evenly split.
     state.pane_ratio = 0.5
-    -- The widths the plugin itself gave the panes, so that its own resizes are not
-    -- taken for a split the user dragged.
-    local function remember_widths()
-        local l, r = widths()
-        state.pane_widths = { l, r }
-    end
+    remember_pane_widths(state)
     local pending = false
 
     local function apply_ratio()
-        local l, r = widths()
-        vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * state.pane_ratio + 0.5))
-        remember_widths()
+        M.restore_pane_split(state)
     end
-    remember_widths()
 
     M.diff_autocmd(state, "DifftPaneSync", "VimResized", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true -- diff view closed: drop this autocmd
+            end
+            if not valid() then
+                return
             end
             if vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
                 apply_ratio()
@@ -302,10 +333,10 @@ local function setup_pane_sync(state)
     })
     M.diff_autocmd(state, "DifftPaneSync", "TabEnter", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
-            if pending and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+            if pending and valid() and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
                 pending = false
                 apply_ratio()
             end
@@ -316,10 +347,10 @@ local function setup_pane_sync(state)
     -- are put back in their ratio instead.
     M.diff_autocmd(state, "DifftPaneSync", "WinResized", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
-            if pending then
+            if pending or not valid() then
                 return
             end
             local tree_resized, panes_resized = false, false
@@ -333,12 +364,12 @@ local function setup_pane_sync(state)
             if tree_resized then
                 apply_ratio()
             elseif panes_resized then
-                local l, r = widths()
+                local l, r = pane_widths(state)
                 local set = state.pane_widths
                 if not (set and set[1] == l and set[2] == r) then
                     -- Dragged by the user: the new split sets the ratio.
                     state.pane_ratio = l / (l + r)
-                    remember_widths()
+                    remember_pane_widths(state)
                 end
             end
         end,
@@ -347,7 +378,7 @@ local function setup_pane_sync(state)
     -- the other pane once Neovim is idle, whatever did it (keys, mouse, commands).
     M.diff_autocmd(state, "DifftPaneSync", "SafeState", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
             end
             fold.sync(state)
@@ -355,8 +386,11 @@ local function setup_pane_sync(state)
     })
     M.diff_autocmd(state, "DifftPaneSync", "WinScrolled", {
         callback = function()
-            if not valid() then
+            if not view_open(state) then
                 return true
+            end
+            if not valid() then
+                return
             end
             local scrolled = vim.v.event
             local left_scrolled = scrolled[tostring(state.left_win)] ~= nil
@@ -651,6 +685,12 @@ end
 local function drop(state)
     cancel_loading(state, false)
     delete_autocmds(state)
+    -- Pane buffers outlive their windows (see diff.set_panes): delete them.
+    for _, buf in ipairs({ state.left_buf, state.right_buf }) do
+        if buf and vim.api.nvim_buf_is_valid(buf) then
+            pcall(vim.api.nvim_buf_delete, buf, { force = true })
+        end
+    end
     if diffs[state.diff_tabpage] == state then
         diffs[state.diff_tabpage] = nil
     end
@@ -715,7 +755,7 @@ local function present(state, result, revset)
 
     -- Remember the diff pane used last, so focus can return to it from the tree.
     local function track_pane()
-        if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+        if not view_open(state) then
             return true -- diff view closed: drop this autocmd
         end
         local win = vim.api.nvim_get_current_win()
@@ -736,7 +776,7 @@ local function present(state, result, revset)
     -- Keep the shown file's position current, not only when the file is left.
     M.diff_autocmd(state, "DifftPaneSide", "CursorMoved", {
         callback = function()
-            if not (state.left_win and vim.api.nvim_win_is_valid(state.left_win)) then
+            if not view_open(state) then
                 return true -- diff view closed: drop this autocmd
             end
             local win = vim.api.nvim_get_current_win()
@@ -985,6 +1025,11 @@ end
 --- @param state table Diff state
 --- @param pos table `{ line, col, side }`
 local function restore_position(state, pos)
+    -- A file with one side only shows that side's pane.
+    local shown = pos.side == "head" and state.right_win or state.left_win
+    if not (shown and vim.api.nvim_win_is_valid(shown)) then
+        pos = vim.tbl_extend("force", pos, { side = pos.side == "head" and "base" or "head" })
+    end
     local head = pos.side == "head"
     local pane = head and state.right_win or state.left_win
     local partner = head and state.left_win or state.right_win
@@ -1083,6 +1128,10 @@ end
 function M.focus_diff()
     local state = M.state
     local win = state.pane_side == "base" and state.left_win or state.right_win
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+        -- A file with one side only: its one pane.
+        win = state.left_win and vim.api.nvim_win_is_valid(state.left_win) and state.left_win or state.right_win
+    end
     if win and vim.api.nvim_win_is_valid(win) then
         vim.api.nvim_set_current_win(win)
     end

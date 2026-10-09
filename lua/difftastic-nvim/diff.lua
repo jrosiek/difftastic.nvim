@@ -53,7 +53,9 @@ local FILETYPES = {
 --- @param buf number Buffer handle
 local function setup_diff_buffer(buf)
     vim.bo[buf].buftype = "nofile"
-    vim.bo[buf].bufhidden = "wipe"
+    -- Kept while its pane is closed for a file that exists on one side only;
+    -- deleted with the view.
+    vim.bo[buf].bufhidden = "hide"
     vim.bo[buf].swapfile = false
     vim.bo[buf].modifiable = false
     vim.b[buf].difftastic_pane = true
@@ -173,6 +175,53 @@ function M.open(state)
     vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
 end
 
+--- Show only the pane of the side a file exists on: an added file has no base
+--- side, a deleted one no head side. The other pane's window is closed, so the
+--- remaining pane takes the width of both, and opened again, on its side and in
+--- the panes' last ratio, for a file with both sides.
+--- @param state table Plugin state
+--- @param file table File from the library
+function M.set_panes(state, file)
+    local function valid(win)
+        return win and vim.api.nvim_win_is_valid(win)
+    end
+    -- A renamed file has the status "created", at its new path.
+    local wanted = {
+        base = file.moved_from ~= nil or file.status ~= "created",
+        head = file.status ~= "deleted",
+    }
+    local panes = {
+        base = { win = "left_win", buf = "left_buf", split = "left", other = "head" },
+        head = { win = "right_win", buf = "right_buf", split = "right", other = "base" },
+    }
+    -- Open first, then close: from an added file straight to a deleted one, the
+    -- base pane must be back before the head pane can go.
+    local reopened = false
+    for side, pane in pairs(panes) do
+        local other = state[panes[pane.other].win]
+        if wanted[side] and not valid(state[pane.win]) and valid(other) then
+            local win = vim.api.nvim_open_win(state[pane.buf], false, { split = pane.split, win = other })
+            setup_diff_window(win)
+            state[pane.win] = win
+            reopened = true
+        end
+    end
+    for side, pane in pairs(panes) do
+        local win, other = state[pane.win], state[panes[pane.other].win]
+        if not wanted[side] and valid(win) and valid(other) then
+            if vim.api.nvim_get_current_win() == win then
+                vim.api.nvim_set_current_win(other)
+                state.pane_side = pane.other
+            end
+            vim.api.nvim_win_close(win, true)
+            state[pane.win] = nil
+        end
+    end
+    if reopened then
+        require("difftastic-nvim").restore_pane_split(state)
+    end
+end
+
 --- Render a file's diff content into the left/right panes.
 --- @param state table Plugin state
 --- @param file table File from the library (`base`, `head`, `hunks`, `language`)
@@ -180,6 +229,7 @@ function M.render(state, file)
     local config = require("difftastic-nvim").config
     require("difftastic-nvim.layout").ensure_rows(file)
     local rows = file.rows or {}
+    M.set_panes(state, file)
 
     -- Rows where hunks start (1-based).
     state.hunk_positions = {}
@@ -267,8 +317,11 @@ function M.render(state, file)
         end
     end
 
-    vim.api.nvim_win_set_cursor(state.left_win, { 1, 0 })
-    vim.api.nvim_win_set_cursor(state.right_win, { 1, 0 })
+    for _, win in ipairs({ state.left_win, state.right_win }) do
+        if win and vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        end
+    end
 end
 
 --- The file line shown on a pane's buffer row.
