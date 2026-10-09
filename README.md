@@ -260,14 +260,14 @@ Highlights automatically inherit from your colorscheme's semantic groups (`Added
 | `DifftTreeIndent` | Derived from `Comment` | Tree indent guide |
 | `DifftTreeChevron` | Derived from `Comment` | Directory expand/collapse chevron |
 | `DifftDiffTitle` | Links to `Title` | Title of the diffed commits in the tree header |
-| `DifftDiffSubtitle` | Links to `NonText` | Subtitle below it, e.g. the count of further commits |
+| `DifftDiffSubtitle` | Derived from `Normal` | Subtitle below it, e.g. the count of further commits |
 | `DifftTreeRule` | Derived from `Normal` | Rules of the tree header and the loading window |
 | `DifftLoadingDone` | Derived from the fold accent | Percentage done in the loading window |
 | `DifftTreeRange` | Links to `BlueItalic` | Tree header revset/base-head value |
 | `DifftTreeNormal` | Derived from `Normal` | Tree panel background |
 | `DifftBar` | Derived from `Normal` | Bar on top of the focused side panel or diff pane |
 | `DifftBarNC` | Derived from `Normal` | Bar on top of the other windows of the view |
-| `DifftBarMuted` | Links to `NonText` | Directory of the file in a diff pane's bar |
+| `DifftBarMuted` | Derived from `Normal` | Directory of the file in a diff pane's bar, and other secondary text in the bars |
 | `DifftTreeCursorLine` | Derived from `Normal` | Tree cursorline background |
 | `DifftTreeCurrent` | Derived from `Normal` | Current file highlight |
 

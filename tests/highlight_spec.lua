@@ -257,3 +257,40 @@ describe("derived highlight groups at startup", function()
         assert.are.equal("#555650", hex(fold))
     end)
 end)
+
+describe("secondary text colour", function()
+    local highlight = require("difftastic-nvim.highlight")
+    local saved
+
+    before_each(function()
+        saved = {}
+        for _, name in ipairs({ "Normal", "NonText" }) do
+            saved[name] = vim.api.nvim_get_hl(0, { name = name })
+        end
+    end)
+
+    after_each(function()
+        for name, hl in pairs(saved) do
+            vim.api.nvim_set_hl(0, name, hl)
+        end
+        highlight.setup()
+    end)
+
+    local function fg(name)
+        return hex(vim.api.nvim_get_hl(0, { name = name, link = false }).fg)
+    end
+
+    it("is the text blended into the background, whatever NonText is", function()
+        -- monokai-pro gives NonText the background colour.
+        vim.api.nvim_set_hl(0, "Normal", { fg = "#fcfcfa", bg = "#2d2a2e" })
+        vim.api.nvim_set_hl(0, "NonText", { fg = "#2d2a2e" })
+        highlight.setup()
+        assert.are.equal("#8a8889", fg("DifftBarMuted"))
+        assert.are.equal("#8a8889", fg("DifftDiffSubtitle"))
+
+        vim.api.nvim_set_hl(0, "Normal", { fg = "#f8f8f2", bg = "#272822" })
+        vim.api.nvim_set_hl(0, "NonText", { fg = "#75715e" })
+        highlight.setup()
+        assert.are.equal("#85857f", fg("DifftBarMuted"))
+    end)
+end)

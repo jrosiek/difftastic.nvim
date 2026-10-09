@@ -95,8 +95,6 @@ M.linked = {
     DifftTreeUnvisited = { link = "Directory" },
     DifftTreeRange = { link = "BlueItalic" },
     DifftDiffTitle = { link = "Title" },
-    DifftDiffSubtitle = { link = "NonText" },
-    DifftBarMuted = { link = "NonText" },
 
     -- Picker text highlights
     DifftPickerJjIconCurrent = { link = "Added" },
@@ -136,6 +134,9 @@ local function apply_highlights(overrides)
     local normal_bg = get_normal_bg()
     local normal_fg = get_fg("Normal") or "#c0caf5"
     local comment_fg = get_fg("Comment") or "#565f89"
+    -- Secondary text (a subtitle, a directory): text blended into the background,
+    -- readable with any theme (some give NonText the background colour itself).
+    local muted_fg = blend(normal_fg, normal_bg, 0.45)
     local added_fg = get_fg("Added") or "#9ece6a"
     local removed_fg = get_fg("Removed") or "#f7768e"
     local changed_fg = get_fg("Changed") or get_fg("Identifier") or "#7aa2f7"
@@ -160,6 +161,8 @@ local function apply_highlights(overrides)
         DifftRemovedLine = { bg = removed_line_bg },
         DifftTreeCurrent = { bg = normal_blend, bold = true },
         DifftTreeNormal = { bg = tree_panel_bg },
+        DifftDiffSubtitle = { fg = muted_fg },
+        DifftBarMuted = { fg = muted_fg },
         -- The bars on top of the side panel and the diff panes share the panel's
         -- background and are underlined in its frame colour; the text of an
         -- unfocused window's bar is dimmed.
