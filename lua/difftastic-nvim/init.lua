@@ -315,16 +315,36 @@ local function setup_pane_sync(state)
         M.restore_pane_split(state)
     end
 
+    -- The side panel's width the user wants: the configured one, until the user
+    -- resizes the panel. A panel squeezed by a small Neovim (also one opened that
+    -- way) grows back to it when Neovim grows.
+    state.tree_width_wanted = state.tree_width_wanted or M.config.tree.width
+    local function note_tree_width()
+        state.tree_width_known = vim.api.nvim_win_get_width(state.tree_win)
+        state.columns_seen = vim.o.columns
+    end
+    local function restore_tree_width()
+        if vim.api.nvim_win_get_width(state.tree_win) < state.tree_width_wanted then
+            vim.api.nvim_win_set_width(state.tree_win, state.tree_width_wanted)
+        end
+        note_tree_width()
+    end
+    note_tree_width()
+
+    local function after_resize()
+        restore_tree_width()
+        if valid() then
+            apply_ratio()
+        end
+    end
+
     M.diff_autocmd(state, "DifftPaneSync", "VimResized", {
         callback = function()
             if not view_open(state) then
                 return true -- diff view closed: drop this autocmd
             end
-            if not valid() then
-                return
-            end
             if vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
-                apply_ratio()
+                after_resize()
             else
                 -- Window sizes of another tab are only updated when it is entered.
                 pending = true
@@ -336,9 +356,9 @@ local function setup_pane_sync(state)
             if not view_open(state) then
                 return true
             end
-            if pending and valid() and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
+            if pending and vim.api.nvim_get_current_tabpage() == state.diff_tabpage then
                 pending = false
-                apply_ratio()
+                after_resize()
             end
         end,
     })
@@ -350,7 +370,7 @@ local function setup_pane_sync(state)
             if not view_open(state) then
                 return true
             end
-            if pending or not valid() then
+            if pending then
                 return
             end
             local tree_resized, panes_resized = false, false
@@ -360,6 +380,16 @@ local function setup_pane_sync(state)
                 elseif win == state.left_win or win == state.right_win then
                     panes_resized = true
                 end
+            end
+            -- The panel resized while Neovim kept its size: by the user, whose
+            -- width it keeps from now on.
+            local tree_width = vim.api.nvim_win_get_width(state.tree_win)
+            if tree_resized and vim.o.columns == state.columns_seen and tree_width ~= state.tree_width_known then
+                state.tree_width_wanted = tree_width
+                note_tree_width()
+            end
+            if not valid() then
+                return
             end
             if tree_resized then
                 apply_ratio()
@@ -1186,6 +1216,7 @@ function M.reset_tree_width()
     local state = M.state
     local tree_win = state.tree_win
     if tree_win and vim.api.nvim_win_is_valid(tree_win) then
+        state.tree_width_wanted = M.config.tree.width
         vim.api.nvim_win_set_width(tree_win, M.config.tree.width)
     end
 end

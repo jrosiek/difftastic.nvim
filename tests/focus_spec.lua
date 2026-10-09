@@ -786,6 +786,47 @@ describe("pane sync", function()
             assert.are.same(dragged, widths())
         end)
 
+        describe("side panel width", function()
+            local configured
+
+            before_each(function()
+                configured = remote("return require('difftastic-nvim').config.tree.width")
+            end)
+
+            it("grows back to the configured width when a view opened small grows", function()
+                remote([[
+                    local difft = require("difftastic-nvim")
+                    difft.close()
+                    vim.o.columns = 30
+                    difft.open("HEAD")
+                ]])
+                settle()
+                assert.is_true(widths().tree < configured, vim.inspect(widths()))
+
+                set_columns(200)
+
+                assert.are.equal(configured, widths().tree)
+            end)
+
+            it("grows back after Neovim squeezed it", function()
+                set_columns(30)
+                assert.is_true(widths().tree < configured, vim.inspect(widths()))
+                set_columns(200)
+                assert.are.equal(configured, widths().tree)
+            end)
+
+            it("keeps a width the user gave it, narrower or wider, through resizes", function()
+                for _, width in ipairs({ configured - 15, configured + 10 }) do
+                    remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.tree_win, ...)", width)
+                    settle()
+                    set_columns(150)
+                    set_columns(30)
+                    set_columns(200)
+                    assert.are.equal(width, widths().tree)
+                end
+            end)
+        end)
+
         it("keeps a dragged split through a file shown in one pane", function()
             local w = widths()
             remote("vim.api.nvim_win_set_width(require('difftastic-nvim').state.left_win, ...)", math.floor((w.left + w.right) / 4))
