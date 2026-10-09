@@ -1,3 +1,14 @@
+> **This is a fork of [clabby/difftastic.nvim](https://github.com/clabby/difftastic.nvim)**, focused on reviewing diffs comfortably, especially large ones.
+>
+> - **Never blocks Neovim.** Diffs are computed in the background, files in parallel, with live progress; `q` cancels.
+> - **Built for review.** Mark files as reviewed (`R`), jump to the next unreviewed one (`]u` / `[u`), see progress in the panel (`3/12 reviewed`). Each file remembers where you left it.
+> - **Less noise.** Unchanged lines are folded around each change, with the fold state kept in step between both panes.
+> - **Real line numbers.** The panes show each file's own line numbers, not buffer rows; `gf` opens the file at the right line.
+> - **Several diffs at once.** With `multiple_diffs = true`, each diff gets its own tab.
+> - **A layout that behaves.** Panes keep their split on resize, double-click a split to reset it, and the colours follow your theme, including NvChad's theme switcher.
+>
+> Everything else works as upstream; this README describes the fork.
+
 # `difftastic.nvim`
 
 A Neovim plugin that displays [`difftastic`](https://github.com/Wilfred/difftastic)'s structural diffs in a side-by-side
