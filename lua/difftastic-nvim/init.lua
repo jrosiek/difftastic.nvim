@@ -690,8 +690,17 @@ local function present(state, files, revset)
     state.current_file_idx = 1
     state.range_kind, state.range_label = range_context(revset, M.config.vcs)
 
-    tree.open(state)
+    -- The tab's window becomes the side panel and keeps its place at the left
+    -- edge, the panes open to its right: no window already shown moves, which
+    -- GUIs animating window positions (Neovide) would show sliding in.
+    local panel_win = vim.api.nvim_get_current_win()
     diff.open(state)
+    vim.api.nvim_set_current_win(panel_win)
+    tree.open(state)
+    vim.api.nvim_set_current_win(state.right_win)
+    -- Narrowing the panel gave its columns to the base pane: split evenly again.
+    local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
+    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
     keymaps.setup(state)
 
     -- Remember the diff pane used last, so focus can return to it from the tree.

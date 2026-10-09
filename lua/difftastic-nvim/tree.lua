@@ -482,10 +482,13 @@ local function render_header(state, total_add, total_del, replace_lines)
     vim.api.nvim_buf_add_highlight(state.tree_buf, ns, "DifftTreeDivider", 3, 0, -1)
 end
 
+--- Show the side panel in the current window, at the configured width.
+--- @param state table Plugin state
 function M.open(state)
-    vim.cmd("topleft vertical " .. get_config().width .. " new")
     state.tree_win = vim.api.nvim_get_current_win()
-    state.tree_buf = vim.api.nvim_get_current_buf()
+    state.tree_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(state.tree_win, state.tree_buf)
+    vim.api.nvim_win_set_width(state.tree_win, get_config().width)
 
     M.hide_text_columns(state.tree_win)
     vim.wo[state.tree_win].winfixwidth = true

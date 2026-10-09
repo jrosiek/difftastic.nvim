@@ -102,6 +102,28 @@ describe("diff state per tab", function()
         assert.are.same({}, autocmds("DifftPaneSync"))
     end)
 
+    for _, splitright in ipairs({ true, false }) do
+        it(("lays out panel, base and head left to right (splitright %s)"):format(splitright), function()
+            local saved = vim.o.splitright
+            vim.o.splitright = splitright
+            difft.open("HEAD")
+            vim.o.splitright = saved
+
+            local function col(win)
+                return vim.api.nvim_win_get_position(win)[2]
+            end
+            local s = difft.state
+            assert.are.equal(0, col(s.tree_win))
+            assert.is_true(col(s.tree_win) < col(s.left_win) and col(s.left_win) < col(s.right_win))
+            -- The panel is the window the tab opened with (the oldest), so no
+            -- window already shown moved.
+            local wins = vim.api.nvim_tabpage_list_wins(0)
+            table.sort(wins)
+            assert.are.equal(wins[1], s.tree_win)
+            assert.are.equal(s.right_win, vim.api.nvim_get_current_win())
+        end)
+    end
+
     describe("with multiple_diffs", function()
         before_each(function()
             difft.config.multiple_diffs = true
