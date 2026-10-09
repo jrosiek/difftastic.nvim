@@ -36,6 +36,9 @@ M.config = {
     auto_review = false,
     --- Most difft processes run at once for a git diff; 0 uses one per CPU
     max_parallel_difft_calls = 0,
+    --- When true, each diff opens in a tab of its own and stays open beside the
+    --- others; when false, opening a diff replaces the open one
+    multiple_diffs = false,
     keymaps = {
         next_file = "]f",
         prev_file = "[f",
@@ -208,6 +211,9 @@ function M.setup(opts)
     end
     if opts.auto_review ~= nil then
         M.config.auto_review = opts.auto_review
+    end
+    if opts.multiple_diffs ~= nil then
+        M.config.multiple_diffs = opts.multiple_diffs
     end
     if opts.max_parallel_difft_calls ~= nil then
         local value = opts.max_parallel_difft_calls
@@ -831,15 +837,26 @@ end
 --- Open diff view for a revision/commit range.
 --- @param revset string|nil jj revset or git commit range (nil = unstaged, "--staged" = staged)
 function M.open(revset)
-    -- One diff at a time: a new one replaces the one open (or still loading).
-    for _, state in pairs(diffs) do
-        M.close(state)
+    if M.config.multiple_diffs then
+        -- A diff of the same revset already open (or loading): go to its tab.
+        for tab, state in pairs(diffs) do
+            if state.revset == revset and vim.api.nvim_tabpage_is_valid(tab) then
+                vim.api.nvim_set_current_tabpage(tab)
+                return
+            end
+        end
+    else
+        -- One diff at a time: a new one replaces the one open (or still loading).
+        for _, state in pairs(diffs) do
+            M.close(state)
+        end
     end
     -- The theme may have changed without a ColorScheme event since setup().
     highlight.refresh()
 
     -- Show the new tab with a loading message while the diff is computed.
     local state = new_state()
+    state.revset = revset
     state.original_tabpage = vim.api.nvim_get_current_tabpage()
     vim.cmd("tabnew")
     state.diff_tabpage = vim.api.nvim_get_current_tabpage()
@@ -884,10 +901,14 @@ function M.open(revset)
     present(state, result.files, revset)
 end
 
---- Close a diff view: the current tab's, else the one open.
+--- Close a diff view: the current tab's, else (without `multiple_diffs`) the
+--- one open.
 --- @param state table|nil Diff state to close (internal)
 function M.close(state)
-    state = state or diffs[vim.api.nvim_get_current_tabpage()] or select(2, next(diffs))
+    state = state or diffs[vim.api.nvim_get_current_tabpage()]
+    if not state and not M.config.multiple_diffs then
+        state = select(2, next(diffs))
+    end
     if not state then
         return
     end

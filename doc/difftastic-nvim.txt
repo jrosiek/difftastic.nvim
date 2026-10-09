@@ -97,6 +97,10 @@ Downloaded binaries are stored in: >
     copy vs @). The `--staged` flag shows @ changes since jj has no staging
     area. To view the parent change explicitly, use `:Difft @-` which is
     equivalent to `jj diff -r @-`.
+
+    A new diff replaces the open one. With `multiple_diffs = true`, each
+    diff opens in a tab of its own and the others stay open; `:Difft` for a
+    revset already open goes to that diff's tab.
                                                           *:DifftToggleReviewed*
 :DifftToggleReviewed
     Toggle the reviewed mark of the shown file. With the cursor in the
@@ -105,7 +109,7 @@ Downloaded binaries are stored in: >
 
                                                                    *:DifftClose*
 :DifftClose
-    Close the diff view.
+    Close the diff view (with `multiple_diffs`, the current tab's).
 
                                                                    *:DifftUpdate*
 :DifftUpdate
@@ -175,6 +179,7 @@ Call the setup function with your options: >lua
         scroll_to_first_hunk = true,  -- Auto-scroll to first hunk after opening a file (default: true)
         focus_diff_on_select = true,  -- Focus the diff pane after selecting a file in the tree (default: true)
         auto_review = false,  -- Mark a file as reviewed when it is shown (default: false)
+        multiple_diffs = false, -- Each diff in its own tab beside the others (default: false)
         max_parallel_difft_calls = 0, -- files processed at once; 0 = one per CPU
         context_size = 3,     -- Unchanged lines kept around changes; 0 = no folding (default: 3)
         min_fold_size = 2,    -- Smallest run of unchanged lines folded (default: 2)

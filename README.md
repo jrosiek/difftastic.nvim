@@ -79,6 +79,8 @@ Requires a Rust toolchain. The plugin automatically builds from source on first 
 | `:DifftToggleReviewed` | Toggle the reviewed mark of the shown file (in the tree: of the row under the cursor) |
 | `:DifftUpdate` | Update to latest release (requires `download = true`) |
 
+A new diff replaces the open one. With `multiple_diffs = true`, each diff opens in a tab of its own and the others stay open; `:Difft` for a revset already open goes to that diff's tab, and `:DifftClose` (or `q`) closes the diff of the current tab.
+
 ### Examples (jj)
 
 ```vim
@@ -151,6 +153,7 @@ require("difftastic-nvim").setup({
     scroll_to_first_hunk = true,  -- Auto-scroll to first hunk when a file is first opened (default: true)
     focus_diff_on_select = true,  -- Move focus to the diff pane after selecting a file in the tree (default: true)
     auto_review = false,          -- Mark a file as reviewed when it is shown (default: false)
+    multiple_diffs = false,       -- Open each diff in its own tab beside the others instead of replacing the open one (default: false)
     max_parallel_difft_calls = 0, -- Files one diff processes at once; 0 = one per CPU (default: 0)
     context_size = 3,             -- Unchanged lines kept around each change; the rest is folded. 0 turns folding off (default: 3)
     min_fold_size = 2,            -- Smallest run of unchanged lines that gets folded (default: 2)
