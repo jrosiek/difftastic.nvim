@@ -144,6 +144,27 @@ describe("view bars", function()
         end
     end)
 
+    it("says in the panel when a file was compared line by line", function()
+        local file = file_record("a.txt", "changed", { text_fallback = true })
+        difft.state.files[1] = file
+        difft.show_file(1)
+        local win = difft.state.tree_win
+        local function at(width)
+            vim.api.nvim_win_set_width(win, width)
+            return vim.api.nvim_eval_statusline(vim.wo[win].winbar, { winid = win, use_winbar = true, maxwidth = width }).str
+        end
+        -- On the left, the status on the right.
+        local wide = at(40)
+        assert.truthy(wide:match("^ ≡ line by line +● modified $"), wide)
+        assert.are.equal(40, vim.fn.strdisplaywidth(wide))
+        -- Left out first when the panel is narrow.
+        assert.are.equal(27, vim.fn.strdisplaywidth(at(27)))
+        assert.truthy(at(27):match("^ +● modified $"), at(27))
+        local pane_bar = require("difftastic-nvim.diff").panel_bar
+        vim.api.nvim_win_set_width(win, 40)
+        assert.truthy(vim.api.nvim_win_call(win, pane_bar):find("%#DifftBarMuted#≡ line by line", 1, true))
+    end)
+
     it("has the side panel's background and an underline, also with folds", function()
         -- Folds are on by default.
         bars("a.txt")

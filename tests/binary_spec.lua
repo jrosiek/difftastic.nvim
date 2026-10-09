@@ -352,3 +352,86 @@ describe("difft the library runs", function()
         vim.env.JJ_USER, vim.env.JJ_EMAIL = env.JJ_USER, env.JJ_EMAIL
     end)
 end)
+
+describe("a file difft fails on", function()
+    local lib_ok, lib = pcall(binary.get)
+    local difft = vim.fn.exepath("difft")
+    if not (lib_ok and lib.set_difft and difft ~= "" and vim.fn.executable("git") == 1 and jit.os ~= "Windows") then
+        it("is skipped without the native library, difft or git", function() end)
+        return
+    end
+
+    local repo, fake
+
+    local function run(cmd, cwd)
+        local out = vim.system(cmd, { text = true, cwd = cwd }):wait()
+        assert(out.code == 0, table.concat(cmd, " ") .. ": " .. (out.stderr or ""))
+    end
+
+    before_each(function()
+        repo = vim.fn.resolve(vim.fn.tempname())
+        vim.fn.mkdir(repo, "p")
+        -- A difft that crashes unless asked to compare as plain text.
+        fake = vim.fn.tempname()
+        vim.fn.writefile({
+            "#!/bin/sh",
+            'if [ -z "$DFT_OVERRIDE" ]; then echo "thread main panicked" >&2; exit 101; fi',
+            'exec "' .. difft .. '" "$@"',
+        }, fake)
+        vim.uv.fs_chmod(fake, tonumber("755", 8))
+        lib.set_difft(fake)
+    end)
+
+    after_each(function()
+        lib.set_difft(nil)
+        vim.fn.delete(repo, "rf")
+        vim.fn.delete(fake)
+    end)
+
+    it("is compared as plain text instead of failing the git diff", function()
+        run({ "git", "init", "-q" }, repo)
+        run({ "git", "config", "user.email", "t@t" }, repo)
+        run({ "git", "config", "user.name", "t" }, repo)
+        vim.fn.writefile({ "local a = 1" }, repo .. "/a.lua")
+        run({ "git", "add", "-A" }, repo)
+        run({ "git", "commit", "-q", "-m", "one" }, repo)
+        vim.fn.writefile({ "local a = 2" }, repo .. "/a.lua")
+
+        local file = lib.run_diff_unstaged("git", 0, repo).files[1]
+        assert.are.equal("a.lua", file.path)
+        assert.is_true(file.text_fallback)
+        assert.are.equal("local a = 2", file.head.lines[1].content)
+    end)
+
+    it("is compared as plain text, with all files, instead of failing the jj diff", function()
+        if vim.fn.executable("jj") ~= 1 then
+            return
+        end
+        local env = { JJ_USER = vim.env.JJ_USER, JJ_EMAIL = vim.env.JJ_EMAIL }
+        vim.env.JJ_USER, vim.env.JJ_EMAIL = "t", "t@t"
+        run({ "jj", "git", "init" }, repo)
+        vim.fn.writefile({ "local a = 1" }, repo .. "/a.lua")
+        run({ "jj", "commit", "-m", "one" }, repo)
+        vim.fn.writefile({ "local a = 2" }, repo .. "/a.lua")
+
+        local ok, result = pcall(lib.run_diff_unstaged, "jj", 0, repo)
+        vim.env.JJ_USER, vim.env.JJ_EMAIL = env.JJ_USER, env.JJ_EMAIL
+        assert.is_true(ok, tostring(result))
+        assert.is_true(result.files[1].text_fallback)
+    end)
+
+    it("is still reported when plain text fails too", function()
+        vim.fn.writefile({ "#!/bin/sh", "exit 101" }, fake)
+        run({ "git", "init", "-q" }, repo)
+        run({ "git", "config", "user.email", "t@t" }, repo)
+        run({ "git", "config", "user.name", "t" }, repo)
+        vim.fn.writefile({ "x" }, repo .. "/a.txt")
+        run({ "git", "add", "-A" }, repo)
+        run({ "git", "commit", "-q", "-m", "one" }, repo)
+        vim.fn.writefile({ "y" }, repo .. "/a.txt")
+
+        local ok, err = pcall(lib.run_diff_unstaged, "git", 0, repo)
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("difft failed on a.txt", 1, true), tostring(err))
+    end)
+end)

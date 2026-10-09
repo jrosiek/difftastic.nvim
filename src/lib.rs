@@ -219,6 +219,10 @@ fn jj_diff_stats(root: &Path, mode: &DiffMode) -> FileStats {
     git_diff_stats(root, &[git_range.as_str()])
 }
 
+/// difft's language override that compares every file as plain text, line by
+/// line: the fallback for files difft fails on.
+const TEXT_OVERRIDE: &str = "*:text";
+
 /// The difft program the library runs, set from Lua (`set_difft`), e.g. a
 /// downloaded one; `difft` from PATH when unset.
 static DIFFT: RwLock<Option<PathBuf>> = RwLock::new(None);
@@ -239,11 +243,27 @@ fn set_difft(_: &Lua, path: Option<String>) -> LuaResult<()> {
 }
 
 /// Runs difftastic via jj for the mode (`jj diff [-r <revset>] --tool difft`) and
-/// parses the JSON output.
+/// parses the JSON output. jj runs difft once over all files, so when it fails
+/// (e.g. crashes on one file's syntax), all files are compared again as plain
+/// text; the flag returned says so.
 fn run_jj_diff(
     root: &Path,
     mode: &DiffMode,
     run: &Run,
+) -> Result<(Vec<difftastic::DifftFile>, bool), DiffError> {
+    match run_jj_diff_as(root, mode, run, false) {
+        Err(DiffError::Failed(message)) => run_jj_diff_as(root, mode, run, true)
+            .map(|files| (files, true))
+            .map_err(|_| DiffError::Failed(message)),
+        other => other.map(|files| (files, false)),
+    }
+}
+
+fn run_jj_diff_as(
+    root: &Path,
+    mode: &DiffMode,
+    run: &Run,
+    as_text: bool,
 ) -> Result<Vec<difftastic::DifftFile>, DiffError> {
     let mut cmd = Command::new("jj");
     cmd.arg("diff").current_dir(root);
@@ -266,10 +286,14 @@ fn run_jj_diff(
             path.to_string_lossy()
         ));
     }
+    if as_text {
+        cmd.env("DFT_OVERRIDE", TEXT_OVERRIDE);
+    }
     let output = run.output(cmd.env("DFT_DISPLAY", "json").env("DFT_UNSTABLE", "yes"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // jj only warns when the tool fails, and still exits successfully.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() || stderr.contains("Tool exited with exit status") {
         return Err(format!("jj command failed: {stderr}").into());
     }
 
@@ -451,15 +475,18 @@ fn difft_temp_dir() -> PathBuf {
 /// path first, `/dev/null` for a missing side, and the new path for a rename,
 /// from the repository root. difft then picks the same language, reads the same
 /// `.gitattributes` and reports the same path as under `git diff`.
+///
+/// When difft fails on the file (e.g. crashes on its syntax), the file is
+/// compared again as plain text; the flag returned says so.
 fn run_difft_git_style(
     root: &Path,
     change: &GitChange,
     old: Option<&[u8]>,
     new: Option<&[u8]>,
     run: &Run,
-) -> Result<difftastic::DifftFile, DiffError> {
+) -> Result<(difftastic::DifftFile, bool), DiffError> {
     let dir = difft_temp_dir();
-    let diff = || -> Result<difftastic::DifftFile, DiffError> {
+    let diff = |as_text: bool| -> Result<difftastic::DifftFile, DiffError> {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Failed to create a temporary directory: {e}"))?;
         let write = |name: &str, content: Option<&[u8]>| -> Result<PathBuf, String> {
@@ -491,6 +518,9 @@ fn run_difft_git_style(
             cmd.arg(new_path)
                 .arg(format!("rename from {path}\nrename to {new_path}\n"));
         }
+        if as_text {
+            cmd.env("DFT_OVERRIDE", TEXT_OVERRIDE);
+        }
         let output = run.output(
             cmd.current_dir(root)
                 .env("DFT_DISPLAY", "json")
@@ -506,7 +536,12 @@ fn run_difft_git_style(
             .next()
             .ok_or_else(|| format!("difft reported nothing for {path}"))?)
     };
-    let result = diff();
+    let result = match diff(false) {
+        Err(DiffError::Failed(message)) => diff(true)
+            .map(|file| (file, true))
+            .map_err(|_| DiffError::Failed(message)),
+        other => other.map(|file| (file, false)),
+    };
     let _ = std::fs::remove_dir_all(&dir);
     result
 }
@@ -559,16 +594,18 @@ fn git_display_files(
             .new_path
             .as_deref()
             .and_then(|p| git_side_bytes(&root, &new_side, p));
-        let mut file = run_difft_git_style(&root, &change, old.as_deref(), new.as_deref(), run)?;
+        let (mut file, as_text) =
+            run_difft_git_style(&root, &change, old.as_deref(), new.as_deref(), run)?;
         let (file_stats, _, _, moved_from) = prepare_file_for_display(&mut file, &stats, &renames);
         let name = step_name(&file.path);
-        let display = process_prepared_file(
+        let mut display = process_prepared_file(
             file,
             bytes_into_lines(old),
             bytes_into_lines(new),
             file_stats,
             moved_from,
         );
+        display.text_fallback = as_text;
         run.step(name)?;
         Ok(display)
     })?;
@@ -600,7 +637,7 @@ fn jj_display_files(
     // paths `jj file show` resolves are both repo-root-relative.
     let root = jj_root(dir).unwrap_or_else(|| dir.to_path_buf());
     run.note("Running jj diff");
-    let files = run_jj_diff(&root, mode, run)?;
+    let (files, as_text) = run_jj_diff(&root, mode, run)?;
     let stats = jj_diff_stats(&root, mode);
     let renames = jj_rename_map(&root, mode);
     // The revisions to read each side from; no new revision means the working copy.
@@ -626,13 +663,14 @@ fn jj_display_files(
         };
         let file = pair_jj_rename(file, &renames, old.as_deref(), new.as_deref());
         let name = step_name(&file.path);
-        let display = process_prepared_file(
+        let mut display = process_prepared_file(
             file,
             into_lines(old),
             into_lines(new),
             file_stats,
             moved_from,
         );
+        display.text_fallback = as_text;
         run.step(name)?;
         Ok(display)
     })?;

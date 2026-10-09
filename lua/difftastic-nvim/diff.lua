@@ -297,7 +297,8 @@ end
 
 --- The bar of the side panel (the 'winbar' expression set by `set_bars`): how the
 --- shown file changed, right-aligned with a one-cell margin, its name cut with
---- "…" when the panel is too narrow.
+--- "…" when the panel is too narrow. A file difft could only compare as plain
+--- text gets "≡ line by line" on the left, dimmed, while there is room for it.
 --- @return string
 function M.panel_bar()
     -- The window being drawn; nvim_eval_statusline() makes it current instead.
@@ -306,8 +307,18 @@ function M.panel_bar()
     if not status then
         return ""
     end
-    local text = cut(status.glyph .. " " .. status.name, vim.api.nvim_win_get_width(win) - 1, false)
-    return ("%%=%%#%s#%s%%* "):format(status.hl_group, escape_bar(text))
+    local width = vim.api.nvim_win_get_width(win) - 1
+    local text = cut(status.glyph .. " " .. status.name, width, false)
+    -- Neovim drops leading spaces of an expression's plain result; an item in
+    -- front keeps the margin.
+    local note = "%*"
+    if status.text_fallback then
+        local label = " ≡ line by line  "
+        if vim.fn.strdisplaywidth(label) + vim.fn.strdisplaywidth(text) <= width then
+            note = "%* %#DifftBarMuted#≡ line by line%*"
+        end
+    end
+    return ("%s%%=%%#%s#%s%%* "):format(note, status.hl_group, escape_bar(text))
 end
 
 --- Name one of the view's buffers `difftastic://<tab>/<part>[/<path>]`, so
@@ -349,7 +360,12 @@ end
 function M.set_bars(state, file)
     local glyph, hl_group, name = M.file_status(file)
     if state.tree_win and vim.api.nvim_win_is_valid(state.tree_win) then
-        vim.w[state.tree_win].difft_status = { glyph = glyph, hl_group = hl_group, name = name }
+        vim.w[state.tree_win].difft_status = {
+            glyph = glyph,
+            hl_group = hl_group,
+            name = name,
+            text_fallback = file.text_fallback,
+        }
         vim.wo[state.tree_win].winbar = "%{%v:lua.require'difftastic-nvim.diff'.panel_bar()%}"
     end
 
