@@ -287,6 +287,8 @@ function M.restore_pane_split(state)
         return
     end
     local l, r = pane_widths(state)
+    -- The one way the panes' space is split; with an odd width, the base pane
+    -- gets the extra column.
     vim.api.nvim_win_set_width(state.left_win, math.floor((l + r) * (state.pane_ratio or 0.5) + 0.5))
     remember_pane_widths(state)
 end
@@ -809,8 +811,7 @@ local function present(state, result, revset)
     tree.open(state)
     vim.api.nvim_set_current_win(state.right_win)
     -- Narrowing the panel gave its columns to the base pane: split evenly again.
-    local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
-    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
+    M.restore_pane_split(state)
     keymaps.setup(state)
 
     -- Remember the diff pane used last, so focus can return to it from the tree.
@@ -1289,11 +1290,10 @@ function M.equalize_panes()
     if not (left and right and vim.api.nvim_win_is_valid(left) and vim.api.nvim_win_is_valid(right)) then
         return
     end
-    local total = vim.api.nvim_win_get_width(left) + vim.api.nvim_win_get_width(right)
-    -- An exact half, kept for later resizes (see setup_pane_sync).
+    -- An exact half, kept for later resizes (see setup_pane_sync), split the way
+    -- those resizes split it, so the split does not move by a column between them.
     state.pane_ratio = 0.5
-    vim.api.nvim_win_set_width(left, math.floor(total / 2))
-    state.pane_widths = { vim.api.nvim_win_get_width(left), vim.api.nvim_win_get_width(right) }
+    M.restore_pane_split(state)
 end
 
 --- Give the side panel its configured width (tree.width); the diff panes keep

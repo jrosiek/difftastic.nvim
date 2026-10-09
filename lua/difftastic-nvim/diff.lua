@@ -172,8 +172,10 @@ function M.open(state)
 
     -- :vsplit gives the new (current) pane at least 'winwidth' columns, so in a
     -- narrow terminal the base pane would get what is left; split evenly.
+    -- Rounded like every later split (restore_pane_split): the extra column of an
+    -- odd width goes to the base pane.
     local total = vim.api.nvim_win_get_width(state.left_win) + vim.api.nvim_win_get_width(state.right_win)
-    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2))
+    vim.api.nvim_win_set_width(state.left_win, math.floor(total / 2 + 0.5))
 end
 
 --- How a file changed: its glyph, highlight group and name, as the tree and the

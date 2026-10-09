@@ -1181,16 +1181,18 @@ describe("double click on the side panel's right border", function()
         nvim.settle()
     end
 
-    for _, current in ipairs({ "tree_win", "left_win", "right_win" }) do
-        it("resets the panel to its configured width with " .. current .. " focused", function()
+    for _, case in ipairs({ { "tree_win", 70 }, { "left_win", 70 }, { "right_win", 70 }, { "tree_win", 25 }, { "right_win", 25 } }) do
+        local current, start = case[1], case[2]
+        it(("resets the panel from %d to its configured width with %s focused"):format(start, current), function()
             nvim.remote([[
                 local s = require("difftastic-nvim").state
-                vim.api.nvim_win_set_width(s.tree_win, 70)
-                vim.api.nvim_set_current_win(s[...])
-            ]], current)
+                local current, start = ...
+                vim.api.nvim_win_set_width(s.tree_win, start)
+                vim.api.nvim_set_current_win(s[current])
+            ]], current, start)
             nvim.settle()
             local before = widths()
-            assert.are.equal(70, before.tree)
+            assert.are.equal(start, before.tree)
 
             double_click_tree_border()
 
@@ -1203,6 +1205,56 @@ describe("double click on the side panel's right border", function()
             assert.are.equal("n", nvim.remote("return vim.api.nvim_get_mode().mode"))
         end)
     end
+
+    it("keeps the panes even after the panel is dragged wider and reset", function()
+        -- Even the panes with a double click on their split.
+        local function double_click_split()
+            nvim.remote([[
+                local s = require("difftastic-nvim").state
+                local pos = vim.api.nvim_win_get_position(s.left_win)
+                local col = pos[2] + vim.api.nvim_win_get_width(s.left_win)
+                for _ = 1, 2 do
+                    vim.api.nvim_input_mouse("left", "press", "", 0, pos[1] + 5, col)
+                    vim.api.nvim_input_mouse("left", "release", "", 0, pos[1] + 5, col)
+                end
+            ]])
+            nvim.settle()
+        end
+        -- An odd width for the panes once the panel has its configured width, so
+        -- one pane gets an extra column.
+        nvim.remote("vim.o.columns = vim.o.columns + 1")
+        nvim.settle()
+        double_click_split()
+        local even = widths()
+        assert.is_true(math.abs(even.left - even.right) <= 1, vim.inspect(even))
+
+        -- Drag the panel's border 30 columns to the right, a column at a time.
+        local at = nvim.remote([[
+            local win = require("difftastic-nvim").state.tree_win
+            local pos = vim.api.nvim_win_get_position(win)
+            return { pos[1] + 5, pos[2] + vim.api.nvim_win_get_width(win) }
+        ]])
+        local function mouse(action, col)
+            nvim.remote("local action, row, col = ...; vim.api.nvim_input_mouse('left', action, '', 0, row, col)", action, at[1], col)
+            nvim.settle()
+        end
+        mouse("press", at[2])
+        for step = 1, 30 do
+            mouse("drag", at[2] + step)
+        end
+        mouse("release", at[2] + 30)
+        local dragged = widths()
+        assert.is_true(dragged.tree > even.tree, vim.inspect(dragged))
+        assert.is_true(math.abs(dragged.left - dragged.right) <= 1, "after the drag: " .. vim.inspect(dragged))
+
+        double_click_tree_border()
+
+        local w = widths()
+        assert.is_true(math.abs(w.left - w.right) <= 1, "after the reset: " .. vim.inspect(w))
+        -- Already as even as it gets: evening the split again moves nothing.
+        double_click_split()
+        assert.are.same(w, widths())
+    end)
 
     it("uses the width set in setup()", function()
         nvim.remote([[
