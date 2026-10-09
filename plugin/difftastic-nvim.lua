@@ -47,7 +47,7 @@ end, {
 vim.api.nvim_create_user_command("DifftUpdate", function()
     require("difftastic-nvim").update()
 end, {
-    desc = "Update difftastic-nvim binary to latest release",
+    desc = "Download the difftastic-nvim binary for the installed plugin version again",
 })
 
 vim.api.nvim_create_user_command("DifftPick", function()

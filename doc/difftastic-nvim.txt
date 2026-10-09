@@ -115,8 +115,8 @@ Downloaded binaries are stored in: >
 
                                                                    *:DifftUpdate*
 :DifftUpdate
-    Update the binary to the latest release. Only available when using
-    auto-download (`download = true`).
+    Download the binary for the installed plugin version again. Only
+    available when using auto-download (`download = true`).
 
                                                                       *:DifftPick*
 :DifftPick
@@ -228,11 +228,16 @@ Set a keymap to `false` to disable it.
                                                        *difftastic-nvim-download*
 download ~
     When true, automatically downloads a pre-built binary for your platform
-    from GitHub releases if no local build is found. Binaries are cached in
+    from GitHub releases if no local build is found. It comes from the
+    GitHub repository the plugin was cloned from (so a fork gets its own
+    releases), else from clabby/difftastic.nvim: the newest release at or
+    before the installed plugin version, or the latest release when the
+    plugin is not a git clone. Binaries are cached in
     `vim.fn.stdpath("data") .. "/difftastic-nvim"`.
 
-    When enabled, the plugin also checks for updates on startup and notifies
-    you if a newer version is available. Use |:DifftUpdate| to update.
+    On startup the plugin checks that the cached binary is the one for the
+    installed plugin version, from the same repository, and downloads it
+    again when it is not (e.g. after the plugin was updated).
 
     Default: false
 
