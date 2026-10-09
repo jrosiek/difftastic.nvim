@@ -219,7 +219,9 @@ describe("loading screen", function()
         local float = seen.floats[1]
         -- No border: a bar on top, the range row, and a rule, as in the panel.
         assert.is_nil(float.title)
-        assert.is_true(float.border == nil or table.concat(float.border) == "", vim.inspect(float.border))
+        -- Neovim reports no border as nothing, "none" or empty parts, by version.
+        local border = float.border
+        assert.is_true(border == nil or border == "none" or (type(border) == "table" and table.concat(border) == ""), vim.inspect(border))
         assert.are.equal(3, #float.lines)
         assert.are.equal("DifftBar", float.groups[float.lines[1]])
         assert.are.equal("Loading…", vim.trim(float.lines[1]))
